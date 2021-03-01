@@ -1,0 +1,3410 @@
+---
+output: 
+  html_document:
+    self_contained: true
+    anchor_sections: true
+    toc: false
+    # toc_float:
+    #   collapsed: true
+    #   smooth_scroll: false
+    includes:
+        before_body: cover.html
+    css: style.css
+
+params:
+  year:
+    label: "Year"
+    value: 2020
+    input: slider
+    min: 2013
+    max: 2021
+    step: 1
+    sep: ""
+  month:
+    # label: "Mes"
+    # value: January
+    label: "Quarter"
+    value: "1st (Jan - Mar)"
+    input: select
+    # choices: [January, February, March, April, May, June, July, August, September, October, November, December]
+    choices: ["1st (Jan - Mar)", "2nd (Apr - Jun)", "3rd (Jul - Sep)", "4th (Oct - Dec)"]
+  debt_commit:
+    label: "Debt Commitment - Debt Contributions USD (MM)"
+    value: 50
+    input: numeric
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+
+library(tidyverse)
+library(kableExtra)
+library(magrittr)
+library(reactable)
+library(highcharter)
+library(glue)
+library(lubridate)
+library(downloadthis)
+library(leaflet)
+library(leaflegend)
+
+source("funciones.R")
+df_base <- rio::import("output/base_datos_lf.xlsx") # Cargamos Base de datos general
+desemb <- rio::import("output/desembolsos.xlsx") # cargamos base desembolsos
+country_b <- rio::import("output/lista_mfis.xlsx") 
+
+df_sociales <- rio::import("output/datos_sociales.xlsx")
+
+tech_assist <- rio::import("output/tech_assist.xlsx")
+
+param_mes <- params$month
+
+
+param_mes <- case_when(param_mes == "1st (Jan - Mar)" ~ 3,
+                 param_mes == "2nd (Apr - Jun)" ~ 6,
+                 param_mes == "3rd (Jul - Sep)" ~ 9,
+                 param_mes == "4th (Oct - Dec)" ~ 12)
+
+
+# highcharter options 
+opts <- getOption("highcharter.options")
+opts$decimalPoint <- ","
+options(highcharter.options = opts)
+opts$thousandsSep <- "."
+
+# source("pdf_tablas.R")
+
+```
+
+
+```{r, include=FALSE, results='hide', warning=F, message=F, echo=F}
+# cargamos mapa latinoamerica
+mapa <- sf::st_read("img/hcmap_latam.geojson")
+mapa$country %<>% gsub("Dominican Rep", "Republica Dominicana",.) 
+mapa2 <- mapa
+```
+<div class="principal">
+
+<br>
+<br>
+
+
+<div>
+  
+  <img src="img/BIM.png" heigth = 25% width = 25% align = "left"/> 
+  <img src="img/Logo LocfundII.png" heigth = 30% width = 30% align ="right"/>
+
+</div>
+
+
+<h2>`r month.name[param_mes]`, `r params[1]`</h2>
+<br>
+<hr style="height:2px; color:gray; background-color:gray">
+
+
+
+## CURRENT SITUATION
+
+```{r}
+
+
+
+#plot 1 p1
+# Country Analisis
+mfi_countries <- desemb %>% select(entity = cliente, total = monto_usd) %>% 
+  left_join(country_b, by = "entity") %>% 
+  group_by(country) %>% 
+  summarise(loan = n(),
+            total = round(sum(total)/1000000,2)) 
+
+
+mfi_countries %<>% left_join(tech_assist, by = "country")
+
+
+# Identificamos mfis por país
+
+# Adjuntamos cantidad de mfis
+temp <- desemb %>% select(entity = cliente) %>% 
+  left_join(country_b, by = "entity") %>% 
+  select(country, entity_hom) %>% distinct() %>% 
+  arrange(country) %>% 
+  group_by(country) %>% 
+  summarise(cantidad = n())
+
+mfi_countries %<>% left_join(temp, by = "country")
+
+# adjuntamos fecha primer desembolso
+temp <- desemb %>% select(entity = cliente, fecha) %>% 
+  left_join(country_b, by = "entity") %>% distinct() %>% 
+  group_by(country) %>% 
+  summarise(primer = min(fecha))
+
+mfi_countries %<>% left_join(temp, by = "country")
+mfi_countries$country %<>% gsub("Republica Dominicana", "Dominican Rep",.)
+
+# cargamos mapa latinoamerica
+mapa <- jsonlite::fromJSON("img/hcmap_latam.geojson", simplifyVector = F)
+
+
+# unimos todos lo paises con paises de desembolsos e identificamos que tipo de pais es
+temp <- get_data_from_map(mapa) %>% select(country) # todos los paises
+
+
+temp %<>% left_join(mfi_countries, by = "country") %>% # paises de desmbolso
+  mutate(
+    sede = case_when(
+      country %in% c("Bolivia", "Nicaragua") ~ "Locfund/Bim Offices", # identificamos paises Locfund/Bim Offices
+      country %in% c(mfi_countries %>% pull(country)) ~ "Intervention countries", # identificamos paises Intervention countries
+      T ~  "No intervention" # Todos los demás paises No intervention
+    ),
+    primer = lubridate::ymd(primer)
+  )
+
+
+
+highchart(type = "map") %>% 
+  hc_plotOptions(map = list(
+    allAreas = F,
+    joinBy = "country",
+    mapData = mapa
+  )) %>% 
+  hc_add_series(name = "Locfund/Bim Offices", 
+                data = temp %>% filter(sede == "Locfund/Bim Offices"), 
+                color = "#00C607", 
+                borderColor = "white", 
+                borderWidth = 1/20,
+                tooltip = list(pointFormat = paste("<b>{point.country}</b><br>
+                                                   - Loan Disbursement: {point.loan}<br>
+                                                   - Technical Assistance to MFI's: {point.asist}<br>
+                                                   - Disb. Amount: {point.total} (USD MM)<br>
+                                                   - Total MFI's: {point.cantidad}"))) %>% 
+  hc_add_series(name = "Intervention countries", 
+                data = temp %>% filter(sede == "Intervention countries"), 
+                color = "#00C607", 
+                borderColor = "white", 
+                borderWidth = 1/20,
+                tooltip = list(pointFormat = paste("<b>{point.country}</b><br>
+                                                   - Loan Disbursement: {point.loan}<br>
+                                                   - Technical Assistance to MFI's: {point.asist}<br>
+                                                   - Disb. Amount: {point.total} (USD MM)<br>
+                                                   - Total MFI's: {point.cantidad}"))) %>% 
+  hc_add_series(name = "No intervention", 
+                data = temp %>% filter(sede == "No intervention"), 
+                color = "lightgray", 
+                borderColor = "white", 
+                borderWidth = 1/20,
+                tooltip = list(pointFormat = paste("<b>{point.country}</b><br>"))) %>% 
+  hc_tooltip(borderWidth = 0.01) %>%
+  #            pointFormat=paste("<b>{point.country}</b><br>
+  #                              Loan Disbursement: {point.loan}<br>
+  #                              Technical Assistance to MFI's: {point.asist}<br>
+  #                              Disbursement Amount: {point.total} (USD MM)")) %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  # hc_title(text = "MFIs LOCATIONS",align =  "center") %>%
+  hc_title(text = "<a href='#mapa'>MFIs LOCATIONS</a>", useHTML = T) %>%
+  hc_legend(enabled = F) -> p1
+
+## plot 2
+
+opts <- getOption("highcharter.options")
+opts$decimalPoint <- ","
+opts$thousandsSep <- "."
+options(highcharter.options = opts)
+
+
+
+temp <- as.data.frame(desemb %>% 
+                        mutate(n = 1:nrow(.)) %>% 
+                        group_by(gestion, mes) %>% 
+                        summarise(
+                          value = max(acumulado_usd),
+                          n = max(n)
+                        ) %>% 
+                        mutate(fecha = ymd(paste(gestion,"/", mes, "/", 1)),
+                               value = value/1000000)) %>% 
+  select(fecha, value, n)
+
+
+row.names(temp) <- temp$fecha
+
+temp %<>% xts::as.xts() 
+
+temp$fecha <- NULL
+temp$value_1 <-  round(as.numeric(temp$value), 0)
+temp$value <-  NULL
+titulo <- temp$value_1 %>% last %>% round(., 0)
+
+temp1 <- temp
+temp1$n <- NULL
+temp$value_1 <- NULL
+
+highchart(type = "stock") %>% 
+  hc_add_series(temp1, type = "area", name = "Accumulated disbursements",
+                tooltip = list(valueSuffix = " MM USD")) %>% 
+  hc_add_series(temp, type = "area", name = "Number of disbursements") %>% 
+  hc_colors(colors = "#00C607") %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  hc_tooltip(borderWidth = 0.001, valueDecimals = 0, 
+             xDateFormat = '%B, %Y', shared = T) %>% 
+  # hc_title(text = "TOTAL DISBURSEMENT",align =  "center") %>% 
+  hc_title(text = "<a href='#tot_disb'>TOTAL DISBURSEMENT</a>", useHTML = T) %>%
+  hc_plotOptions(
+    line = list(
+      lineWidth = 5
+    ) 
+  ) -> p2
+
+
+
+# plot 3
+
+
+# llamamos funcion para generar base Country Analisis
+df_imf <- country_analysis(params$year, param_mes)
+
+temp <- df_imf %>% 
+  group_by(country,entity_hom) %>% 
+  summarise(operations = n(),
+            total = round(sum(total)/1000000,2),
+            principal = round(sum(principal)/1000000,2),
+            accrued_interest = round(sum(accrued_interest)/1000000,2)) %>%
+  arrange(desc(total))
+
+
+temp %>% 
+  hchart("bar", hcaes(entity_hom, total)) %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  hc_tooltip(borderWidth = 0, valueDecimals = 0,
+             pointFormat=paste("<b>{point.entity_hom}</b> ({point.country}) <br>
+                               <b>Number of operations:</b> {point.operations:.0f}<br>
+                               <b>Portfolio:</b> {point.total:.0f} MM USD<br>"),
+             headerFormat = "") %>% 
+  hc_colors(colors = "#00C607") %>% 
+  hc_plotOptions(bar = list(
+    states = list(
+      hover = list(
+        color = "#D8FFD9"
+      )
+    ),
+    dataLabels = list(
+      enabled = F,
+      style = list(fontSize = "13px", textOutline = FALSE, color = "white", 
+                   fontFamily = "Open Sans")
+    )
+  )
+  ) %>% 
+  hc_size(height = 650) %>% 
+  # hc_title(text = "MFI DISTRIBUTION",align =  "center") %>% 
+  hc_title(text = "<a href='#mfi_dist'>MFI DISTRIBUTION</a>", useHTML = T) %>%
+  hc_yAxis(title = list(text = "")) %>% 
+  hc_xAxis(title = list(text = "")) -> p3
+
+
+# plot 4 p4
+
+ff <- fund_facts(params$year, param_mes, params$debt_commit)  #ingresamos: gestion, mes, debt commit
+
+ff[1:5,] %>% 
+  hchart("column", hcaes(Indicators, Values)) %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  hc_tooltip(borderWidth = 0, valueDecimals = 0,
+             pointFormat=paste("<b>{point.Indicators:.0f}</b><br>
+                               {point.Values:.0f} MM USD<br>"),
+             headerFormat = "") %>% 
+  hc_colors(colors = "#00C607") %>% 
+  hc_yAxis(title = list(text = "")) %>% 
+  hc_xAxis(title = list(text = "")) %>% 
+  hc_xAxis(visible = F) %>% 
+  hc_title(text = "<a href='#fund_facts'>FUND FACTS</a>", useHTML = T) -> p4
+  # hc_title(text = "FUND FACTS",align =  "center") -> p4
+  
+
+plots <- list(
+  p1, p2, p3, p4
+)
+
+plots %>%
+  map(hc_size, height = 300) %>%
+  {print(hw_grid(.)); .} %>%
+  map(tags$div, class = "col-sm-6") %>%
+  tags$div(class = "row",
+           style = "padding-right: 10px")
+
+
+
+```
+
+## CURRENT PORTFOLIO PERFORMANCE INDICATORS
+
+```{r, fig.width=12}
+# ind <- read_csv("input/tabla_indicadores.csv")
+ind <- ppi_four(params$year, param_mes)
+tabla_resumen(ind)
+
+```
+
+
+<br>
+<hr>
+
+<center>
+<p style="font-size:150%;"> To download a pdf version of the report click on the following button.</p>
+</center>
+
+<center>
+```{r}
+# download_file(
+#   path = here::here("output/balance_sheet.pdf"),
+#   output_name = "balance_sheet",
+#   button_label = "Download PDF version ",
+#   button_type = "danger",
+#   has_icon = TRUE,
+#   icon = "fa fa-file",
+#   self_contained = FALSE,
+#   class = "button_large"
+# )
+
+download_link(
+  link = "https://rafalopezv.io/static/locfund/LOCFUND II QUARTERLY- December 2020.pdf",
+  button_label = "Doownload PDF version ",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-file",
+  self_contained = FALSE,
+  class = "button_large"
+)
+```
+
+</center>
+<hr>
+
+# QUARTER IN REVIEW
+<div class = "row">
+
+<div class = "col-md-6">
+
+- 2020 was marked by the COVID-19 pandemic, which negatively affected the performance of the economies in the region. This crisis initially affected the microfinance industry. However, it began a recovery process at the end of 2020. Despite this negative context, Locfund II was able to achieve a positive performance.
+
+- MFIs response to the crisis was positive. Portfolio quality indicators of the fund remained stable without negative effects. The exposure in MFIs with rescheduled loans decreased by USD 1.6MM between March and December. Consequently, 8 out of 12 MFIs resumed payments during the year. In addition, loans that are still in grace period, are making interest payments.
+
+- During 2020, Locfund II paid USD 24.9 MM to its Senior Lenders according to each Loan Agreement. In addition, the fund has already distributed USD 1.5MM to its equity investors in January 2021.
+
+</div>
+  
+<div class = "col-md-6">
+
+
+- Due to the pandemic and the Economies recessions, the volatility of local currencies in the region led to devaluations in most countries. The impact on Locfund is mitigated by the manager’s strategy of increasing the exposure in dollarized and pegged regimes reducing the FX risk for the fund. During Q4 a recovery in LAC local currencies was observed which allowed the fund to recover  FX results by USD 643K. Less volatility is expected in 2021.
+
+
+- Locfund II remains with an adequate performance due to its proactive strategy that allowed to maintain portfolio quality indicators, together with a positive financial income. These mentioned factors plus the FX recovery, allowed the fund to reach USD 1.5MM profit by 2020.
+
+
+</div>
+</div>
+
+
+<br>
+Hover your mouse on each country to get more information. You can zoom in and out by **scrolling** your mouse or using the **plus** and **minus** symbols  
+
+<a id="mapa"></a>
+
+```{r, include = T, echo = F, out.width = '100%', out.height=700}
+pin <- makeIcon(
+  iconUrl = "http://rafalopezv.io/static/locfund/pin.png",
+  iconWidth = 27, iconHeight = 27
+)
+
+mfi_countries <- desemb %>% select(entity = cliente, total = monto_usd) %>% 
+  left_join(country_b, by = "entity") %>% 
+  group_by(country) %>% 
+  summarise(loan = n(),
+            total = round(sum(total)/1000000,2)) 
+
+
+mfi_countries %<>% left_join(tech_assist, by = "country")
+
+# Adjuntamos cantidad de desembolsos
+temp <- desemb %>% select(entity = cliente) %>% 
+  left_join(country_b, by = "entity") %>% 
+  select(country, entity_hom) %>% distinct() %>% 
+  arrange(country) %>% 
+  group_by(country) %>% 
+  summarise(cantidad = n())
+
+mfi_countries %<>% left_join(temp, by = "country")
+
+# adjuntamos fecha primer desembolso
+temp <- desemb %>% select(entity = cliente, fecha) %>% 
+  left_join(country_b, by = "entity") %>% distinct() %>% 
+  group_by(country) %>% 
+  summarise(primer = min(fecha))
+
+mfi_countries %<>% left_join(temp, by = "country")
+
+# unimos todos lo paises con paises de desembolsos e identificamos que tipo de pais es
+mapa2 %>% 
+  left_join(mfi_countries, by = "country") %>% # paises de desmbolso
+  mutate(
+    sede = case_when(
+      country %in% c("Bolivia", "Nicaragua") ~ "Intervention countries", # identificamos paises Locfund/Bim Offices
+      country %in% c(mfi_countries %>% pull(country)) ~ "Intervention countries", # identificamos paises Intervention countries
+      T ~  "No intervention" # Todos los demás paises No intervention
+    ),
+    primer = lubridate::ymd(primer),
+    total = round(total, 0)
+  ) %>% 
+  group_split(sede) -> temp
+
+# centroides para sede de Bolivia y Nicaragua
+temp[[1]] %>% 
+  filter(country %in% c("Bolivia", "Nicaragua")) %>% 
+  sf::st_centroid() -> centroides
+
+# mapa
+temp1 <- bind_rows(temp)
+paleta <- colorFactor(
+  palette = c("#00C607", "#31313C"),
+  levels = c("Intervention countries", "No intervention"),
+  domain = temp$sede
+)
+
+temp[[1]] -> etiquetas_intervencion
+etiquetas_intervencion$geometry <- NULL
+etiquetas_intervencion %<>% as.data.frame()
+
+etiquetas_intervencion <- lapply(seq(nrow(etiquetas_intervencion)), function(i) {
+  paste0("<b>Country</b>", ': ', etiquetas_intervencion[i, "country"], "<br>",
+         "<b>Total Disbursements: </b>", etiquetas_intervencion[i, "loan"], '<br>',
+         "<b>Technical Assistance to MFIs: </b>", etiquetas_intervencion[i, "asist"], '<br>',
+         "<b>Disbursements Amount: </b>", etiquetas_intervencion[i, "total"], "MM USD", '<br>',
+         "<b>Total MIFs: </b>", etiquetas_intervencion[i, "cantidad"],'<br>')
+})
+
+temp[[2]] -> etiquetas_no
+etiquetas_no$geometry <- NULL
+etiquetas_no %<>% as.data.frame()
+
+etiquetas_no <- lapply(seq(nrow(etiquetas_no)), function(i) {
+  paste0("<b>Country</b>", ': ', etiquetas_no[i, "country"], "<br>",
+         "<b>No intervention")
+})
+
+
+leaflet(leafletOptions(attributionControl = F)) %>%
+  addPolygons(data = temp[[1]], stroke = T, fillOpacity = 1,
+              fillColor = "#00C607", weight = 0.7, color = "#31313C", 
+              label = lapply(etiquetas_intervencion, htmltools::HTML),
+              labelOptions = labelOptions(
+                textsize = "13px",
+                style = list(
+                  'font-family' = 'Open Sans'
+                )
+              )
+  ) %>% 
+  addPolygons(data = temp[[2]], stroke = T, fillOpacity = 1,
+              fillColor = "#E1E1E4", weight = 0.7, color = "#31313C", 
+              label = lapply(etiquetas_no, htmltools::HTML),
+              labelOptions = labelOptions(
+                textsize = "13px",
+                style = list(
+                  'font-family' = 'Open Sans'
+                )
+              )) %>% 
+  addLegend("topright", pal = paleta,  values = ~temp1$sede, title = "") %>%
+  addMarkers(data = centroides, icon = pin, 
+             labelOptions = labelOptions(
+               noHide = T, textOnly = TRUE,
+               style = list(
+                 'font-family' = 'Open Sans',
+                 "color" = "black",
+                 textsize = "13px"
+               )
+             )
+  ) %>% 
+  setView(lat = -20.1887075, lng = -69.8766721, zoom = 2.5) %>% 
+  addLegendImage(images = "http://rafalopezv.io/static/locfund/pin.png",
+                 labels = "Locfund Office", width = 35, height = 35,
+                 orientation = 'vertical',
+                 title = htmltools::tags$div('',
+                                             style = 'font-size: 20px; text-align: center;'),
+                 position = 'topright')
+
+
+```
+
+## ABOUT THE FUND
+
+<div class = "row">
+  
+<div class = "col-md-6">
+
+LOCFUND II L.P. offers local currency denominated debt instruments and targeted credit enhancement financial instruments to microfinance institutions (regulated or non-regulated), microfinance banks, institutional investors, cooperatives and small business banks, which facilitate funding to small and micro enterprises in Latin America and The Caribbean.
+
+</div>
+  
+<div class = "col-md-6">
+
+The fund also provides support for development activities to selected microfinance institutions and stimulates access to local securities markets for fixed income instruments issued by microfinance institutions.
+
+The fund is managed by BIM Ltd.
+
+</div>
+</div>
+
+
+
+## EQUITY INVESTORS
+
+LOCFUND II L.P. has eight equity inverstors which are: Multilateral Investment Fund, FMO, Norfund, BIO, Hyos Invest Holding AG, SIFEM, Panamerican Investments S.A. and BIM Microfinance II.
+
+<hr>
+
+<a id="tot_disb"></a>
+
+## ACCUMULATED DISBURSEMENTS
+
+```{r, include = T, echo = F}
+
+opts <- getOption("highcharter.options")
+opts$decimalPoint <- ","
+opts$thousandsSep <- "."
+options(highcharter.options = opts)
+
+
+
+temp <- as.data.frame(desemb %>% 
+                        mutate(n = 1:nrow(.)) %>% 
+                        group_by(gestion, mes) %>% 
+                        summarise(
+                          value = max(acumulado_usd),
+                          n = max(n)
+                        ) %>% 
+                        mutate(fecha = ymd(paste(gestion,"/", mes, "/", 1)),
+                               value = value/1000000)) %>% 
+  select(fecha, value, n)
+
+
+
+row.names(temp) <- temp$fecha
+
+temp %<>% xts::as.xts() 
+
+temp$fecha <- NULL
+temp$value_1 <-  round(as.numeric(temp$value), 0)
+temp$value <-  NULL
+titulo <- temp$value_1 %>% last %>% round(., 0)
+
+temp1 <- temp
+temp1$n <- NULL
+temp$value_1 <- NULL
+
+highchart(type = "stock") %>% 
+  hc_add_series(temp1, type = "area", name = "Accumulated disbursements",
+                tooltip = list(valueSuffix = " MM USD")) %>% 
+  hc_add_series(temp, type = "area", name = "Number of disbursements") %>% 
+  hc_colors(colors = "#00C607") %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  hc_tooltip(borderWidth = 0.001, valueDecimals = 0, 
+             xDateFormat = '%B, %Y', shared = T) %>% 
+  hc_plotOptions(
+    line = list(
+      lineWidth = 5
+    ) 
+  ) %>% 
+  hc_title(text = glue('{titulo} MM Disbursed')) %>% 
+  hc_subtitle(text = "Hover your mouse on any point of time to get more information<br>You can use the range selector below or click on the time spans or place a specific date at the <strong>From</strong> and <strong>To</strong> boxes", useHTML = TRUE) %>% 
+  hc_add_theme(lc_tema) 
+
+```
+
+<center>
+```{r}
+
+desemb %>% 
+  download_this(
+    output_name = "disbursements",
+    output_extension = ".xlsx",
+    button_label = "
+    Disbursements Historic Data",
+    button_type = "success",
+    has_icon = TRUE,
+    icon = "fa fa-table"
+  )
+
+```
+</center>
+
+## OVERALL SUMMARY {.tabset .tabset-fade .tabset-pills}
+
+<a id="fund_facts"></a>
+
+### FUND FACTS
+
+```{r}
+
+ff <- fund_facts(params$year, param_mes, params$debt_commit)
+
+# Creamos tabla 
+# ff %>%
+#   kbl(caption = "FUND FACTS (USD)") %>%
+#   kable_styling("striped") %>%
+#   kable_classic(full_width = F, html_font = "Open Sans")
+reactable(
+  ff,
+  # filterable = TRUE,
+  bordered = TRUE,
+  striped = TRUE,
+  highlight = TRUE,
+  # defaultPageSize = 15,
+  # resizable = TRUE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+  ),
+  columns = list(
+    Indicators = colDef(minWidth = 200)))
+
+
+
+```
+
+### PORTFOLIO PERFORMANCE INDICATORS
+
+```{r}
+
+ppi <- port_perf_ind(params$year, param_mes)
+
+ppi[7,2] <- round(224,0)
+ppi[6,2] <- 3.93
+# Creamos la tabla
+# ppi %>%
+#   kbl(caption = "FUND FACTS (USD)") %>%
+#   kable_styling("striped") %>%
+#   kable_classic(full_width = F, html_font = "Open Sans")
+
+reactable(
+  ppi,
+  # filterable = TRUE,
+  bordered = TRUE,
+  striped = TRUE,
+  highlight = TRUE,
+  # defaultPageSize = 15,
+  # resizable = TRUE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+  ),
+  columns = list(
+    Indicators = colDef(minWidth = 200)))
+
+
+```
+
+### SOCIAL INDICATORS
+
+```{r}
+
+
+tbl_social <- base_sociales(params$year, param_mes)
+
+
+tbl_social %<>%
+  summarise(`Total Number of Clients` = round(sum(number_of_clients),2),
+            `Female Clients (%)` = round(mean(female_clients_percent)*100,2),
+            # `Female Clients (%)` = round((sum(female_clients)/sum(number_of_clients))*100,2),
+            `Clients in Rural Areas (%)` = round(mean(rural_clients_percent)*100,2),
+            # `Clients in Rural Areas (%)` = round((sum(rural_clients)/sum(number_of_clients))*100,2),
+            `Avg. Loan Size` = round(sum((loan_portfolio_usd_mm)*1000000)/sum(number_of_clients),2)) %>%
+  gather(Indicators, Values)
+  
+reactable(
+  tbl_social,
+  bordered = TRUE,
+  striped = TRUE,
+  highlight = TRUE,
+  # defaultPageSize = 15,
+  # resizable = TRUE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+  ),
+  columns = list(
+    Indicators = colDef(minWidth = 200),
+    Values = colDef(format = colFormat(separators = TRUE))))
+
+
+```
+
+
+
+
+
+<!-- ## FINANCIAL INDICATORS (USD) {.tabset .tabset-fade .tabset-pills} -->
+
+## FINANCIAL INDICATORS (USD)
+
+
+<div class = "row">
+  
+<div class = "col-md-6">
+
+
+### BALANCE SHEET USD
+
+```{r}
+
+
+df_fs <-  df_base_horizontal(params$year)
+
+
+# Adjuntamos Meses vacios en caso de faltar
+nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)]
+df <- data.frame(matrix(ncol = length(temp), nrow = 1))
+colnames(df) <- temp
+df$tipo <- NA
+df_fs <- left_join(df_fs, df)
+
+
+
+df_fs_asset <- df_fs %>% filter(tipo %in% c("ASSETS","LIABILITIES", "EQUITY")) %>% 
+  select(tipo, nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December)
+
+
+
+tabla <- tabla_vert(df_fs_asset)
+
+# tabla %<>% filter(!crudo %in% c("Accrued Interests", "Principal"), ! entidad %in% c(unique(tabla$entidad)))
+tabla %<>% filter(is.na(entidad), is.na(crudo))
+
+
+
+tabla_assets <- tabla %>% filter(tipo == "ASSETS")
+tabla_liab <- tabla %>% filter(tipo == "LIABILITIES") %>% filter(is.na(nivel2))
+tabla_equity <- tabla %>% filter(tipo == "EQUITY")
+
+
+
+# unique(tabla$nivel1)
+tabla_assets <- tabla_assets[order(match(tabla_assets$nivel1, c("Cash and cash equivalent", "Additional Acces Fee - MFX", "Interest - MFX",
+                                                                "Portfolio", "Hedged Assets", "Impairment Provision Reserve", "Management Fee paid in advance",
+                                                                "D&O Insurance paid in advance", "Others", NA))),]
+
+tabla_liab <- tabla_liab[order(match(tabla_liab$nivel1, c("Long Term Liabilities", "Short Term Liabilities", NA))),]
+tabla_equity <- tabla_equity[order(match(tabla_equity$nivel1, c("Capital", "Reserve for Currency Loss", NA))),]
+
+
+tabla <- rbind(rbind(tabla_assets,tabla_liab), tabla_equity)
+
+
+tabla %<>% select(-c(tipo, nivel1, nivel2, entidad))
+tabla %<>% select(columna, "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", crudo, indent) 
+tabla %<>% mutate(columna = case_when(columna == "ASSETS" ~ "Total Assets",
+                                      columna == "LIABILITIES" ~ "Total Liabilities",
+                                      columna == "EQUITY" ~ "Total Equity",
+                                      TRUE ~ columna)) 
+
+tabla %<>% mutate(January = format(January,nsmall=0, big.mark=","),
+                  February = format(February,nsmall=0, big.mark=","),
+                  March = format(March,nsmall=0, big.mark=","),
+                  April = format(April,nsmall=0, big.mark=","),
+                  May = format(May,nsmall=0, big.mark=","),
+                  June = format(June,nsmall=0, big.mark=","),
+                  July = format(July,nsmall=0, big.mark=","),
+                  August = format(August,nsmall=0, big.mark=","),
+                  September = format(September,nsmall=0, big.mark=","),
+                  October = format(October,nsmall=0, big.mark=","),
+                  November = format(November,nsmall=0, big.mark=","),
+                  December = format(December,nsmall=0, big.mark=","))
+
+
+
+negro <- c(7,10, 13)
+espacios_2 <- which(tabla$indent == 2)
+espacios_4 <- which(tabla$indent == 4)
+espacios_6 <- which(tabla$indent == 6)
+espacios_8 <- which(tabla$indent == 8)
+
+
+
+tabla %<>% select(-crudo,-indent)
+
+tabla <- tabla[,c(1,param_mes+1)]
+colnames(tabla) <- c("Variable", "Total")
+
+
+tabla %>% 
+  kbl(caption = "BALANCE SHEET") %>%
+  kable_styling(latex_options = "striped", stripe_color = "#E32636", full_width = TRUE) %>%
+  kable_classic(full_width = F, html_font = "Helvetica") %>% 
+  row_spec(c(negro), bold = T) %>% 
+  add_indent(c(espacios_2), level_of_indent = 1) %>% 
+  add_indent(c(espacios_4), level_of_indent = 2) %>% 
+  add_indent(c(espacios_6), level_of_indent = 3) %>% 
+  add_indent(c(espacios_8), level_of_indent = 4) 
+
+
+
+
+
+```
+
+
+
+</div>
+  
+<div class = "col-md-6">
+
+
+### PROFIT/LOSS SUMMARY
+
+```{r}
+
+
+
+df_fs <-  df_base_horizontal(params$year)
+
+# Adjuntamos Meses vacios en caso de faltar
+nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)]
+df <- data.frame(matrix(ncol = length(temp), nrow = 1))
+colnames(df) <- temp
+df$tipo <- NA
+df_fs <- left_join(df_fs, df)
+
+
+
+df_fs_asset <- df_fs %>% filter(tipo %in% c("PROFIT/(LOSS)", "PROFIT / LOSS before provisions", 
+                                            "PROFIT / LOSS after provisions", "PROFIT / LOSS after FX")) %>% 
+  select(tipo, nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December)
+
+
+
+tabla <- tabla_vert(df_fs_asset)
+
+# tabla %<>% filter(!crudo %in% c("Accrued Interests", "Principal"), ! entidad %in% c(unique(tabla$entidad)))
+tabla1 <- tabla %>% filter(tipo %in% c("PROFIT/(LOSS)")) %>% 
+  filter(is.na(entidad), is.na(crudo))
+tabla1_income <- tabla1 %>% filter(tipo %in% c("PROFIT/(LOSS)")) %>% 
+  filter(nivel1 == "INCOME")
+tabla1_income <- tabla1_income[order(match(tabla1_income$nivel2, c("Loans Interests", NA))),]
+
+
+tabla1_expenses <- tabla1 %>% filter(tipo %in% c("PROFIT/(LOSS)")) %>% 
+  filter(nivel1 == "EXPENSES")
+tabla1_expenses <- tabla1_expenses[order(match(tabla1_expenses$nivel2, c("Management Fees","Senior Loans Interests","Legal Expenses" , "Others", NA))),]
+tabla1_expenses %<>% filter(nivel2 %in% c("Management Fees","Senior Loans Interests", "Others", NA))
+
+temp <- rbind(tabla1_income, tabla1_expenses)
+
+temp <- rbind(temp,
+              tabla %>% filter(tipo %in% c("PROFIT / LOSS before provisions")))
+
+temp <- rbind(temp, 
+              tabla %>% filter(crudo == "Bad Loans Provisions"))
+
+temp <- rbind(temp,
+              tabla %>% filter(crudo %in% c("TSF Expenses","TSF Income")))
+
+temp <- rbind(temp,
+              tabla %>% filter(tipo %in% c("PROFIT / LOSS after provisions")))
+
+
+temp <- rbind(temp,
+              tabla %>% filter(crudo == "Exchange Rate Difference"))
+
+temp <- rbind(temp,
+              tabla %>% filter(tipo %in% c("PROFIT / LOSS after FX")))
+
+
+
+tabla <- temp
+
+tabla %<>% select(-c(tipo, nivel1, nivel2, entidad))
+
+tabla %<>% mutate(Total = January+February+March+April+May+
+                    June+July+August+September+October+November+December)
+
+tabla %<>% select(columna, "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", Total, crudo, indent) 
+
+tabla %<>% mutate(columna = case_when(columna == "INCOME" ~ "Total Income",
+                                      columna == "EXPENSES" ~ "Total Expenses",
+                                      columna == "PROFIT / LOSS before provisions" ~ "Profit/Loss before provisions",
+                                      columna == "PROFIT / LOSS after provisions" ~ "Profit/Loss after provisions",
+                                      columna == "PROFIT / LOSS after FX" ~ "Profit/Loss after FX",
+                                      TRUE ~ columna)) 
+
+
+
+tabla %<>% mutate(January = format(January,nsmall=0, big.mark=","),
+                  February = format(February,nsmall=0, big.mark=","),
+                  March = format(March,nsmall=0, big.mark=","),
+                  April = format(April,nsmall=0, big.mark=","),
+                  May = format(May,nsmall=0, big.mark=","),
+                  June = format(June,nsmall=0, big.mark=","),
+                  July = format(July,nsmall=0, big.mark=","),
+                  August = format(August,nsmall=0, big.mark=","),
+                  September = format(September,nsmall=0, big.mark=","),
+                  October = format(October,nsmall=0, big.mark=","),
+                  November = format(November,nsmall=0, big.mark=","),
+                  December = format(December,nsmall=0, big.mark=","),
+                  Total = format(Total,nsmall=0, big.mark=","))
+
+
+
+
+
+
+negro <- c(which(tabla$columna %in% c("Total Income", "Total Expenses", "Profit/Loss before provisions",
+                                      "Profit/Loss after provisions", "Profit/Loss after FX")))
+espacios_2 <- which(tabla$indent == 2)
+espacios_4 <- which(tabla$indent == 4)
+espacios_6 <- which(tabla$indent == 6)
+espacios_8 <- which(tabla$indent == 8)
+
+
+
+tabla %<>% select(-crudo,-indent)
+
+
+
+
+
+tabla <- tabla[,c(1,param_mes+1,14)]
+
+colnames(tabla)[1] <- "Variable"
+tabla %>% 
+  kbl(caption = "PROFIT/LOSS USD") %>%
+  kable_styling(latex_options = "striped", stripe_color = "#E32636", full_width = FALSE) %>%
+  kable_classic(full_width = F, html_font = "Helvetica") %>% 
+  row_spec(c(negro), bold = T) %>% 
+  add_indent(c(espacios_2), level_of_indent = 1) %>% 
+  add_indent(c(espacios_4), level_of_indent = 2) %>% 
+  add_indent(c(espacios_6), level_of_indent = 3) %>% 
+  add_indent(c(espacios_8), level_of_indent = 4) 
+
+
+
+
+
+```
+
+
+
+</div>
+</div>
+
+<br>
+<hr>
+
+<div class = "row">
+  
+<div class = "col-md-6">
+
+- Despite a large amount of debt installments in 2020, the fund was able to maintain high liquidity figures as of December. During 2021, it is expected that the fund will realize installments for approximately USD 18.8MM, and also, equity and dividend distributions for USD 20MM.
+
+
+</div>
+  
+<div class = "col-md-6">
+
+- As of December 2020, the currencies that showed recovery from September 2020 are COP (USD 375k) and MXN  (USD 234k). 
+
+</div>
+</div>
+
+
+<a id="mfi_disb"></a>
+
+## MFI DISTRIBUTION (MM USD)
+
+```{r, echo = F, fig.align='center'}
+
+# llamamos funcion para generar base Country Analisis
+df_imf <- country_analysis(params$year, param_mes)
+
+
+temp <- df_imf %>% 
+  group_by(country,entity_hom) %>% 
+  summarise(operations = n(),
+            total = round(sum(total)/1000000,2),
+            principal = round(sum(principal)/1000000,2),
+            accrued_interest = round(sum(accrued_interest)/1000000,2)) %>%
+  arrange(desc(total))
+
+
+temp %>% 
+  hchart("bar", hcaes(entity_hom, total)) %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  hc_tooltip(borderWidth = 0, valueDecimals = 0,
+             pointFormat=paste("<b>{point.entity_hom}</b> ({point.country}) <br>
+                               <b>Number of operations:</b> {point.operations:.0f}<br>
+                               <b>Portfolio:</b> {point.total:.0f} MM USD<br>"),
+             headerFormat = "") %>% 
+  hc_plotOptions(bar = list(
+    states = list(
+      hover = list(
+        color = "#D8FFD9"
+      )
+    ),
+    dataLabels = list(
+        enabled = F,
+        style = list(fontSize = "13px", textOutline = FALSE, color = "white", 
+                     fontFamily = "Open Sans")
+      )
+  )
+  ) %>% 
+  hc_size(height = 650) %>% 
+  hc_yAxis(title = list(text = "")) %>% 
+  hc_xAxis(title = list(text = ""))  %>% 
+  hc_add_theme(lc_tema) %>% 
+  hc_title(text = "Hover your mouse over the bars to get more information")
+ 
+ 
+
+```
+
+
+<div class = "row">
+  
+<div class = "col-md-6">
+
+## TECHNICAL SUPPORT FACILITY
+
+During 2020, 25 activities were approved by the donors committee, with estimated approved budget of USD 246K that corresponds to the following subcomponents: 44% in digital transformation, 38% in capacity building and 18% ESG. 8 activities have been already completed, benefiting 7 MFIs from 5 countries, 95 staff member were trained (23% female). Additionally, 17 consultancies are still in process. One of these is a SPI4 program aimed to train, accompany and monitor the institution's staff in filling out the SPI4 tool, expecting to benefit at least 15 Locfund’s clients.
+
+
+</div>
+  
+<div class = "col-md-6">
+
+## CAPITAL MARKETS COMPONENT
+
+- New bond issuances from clients in Colombia, Honduras and Guatemala are being postponed as a consequence of the COVID-19 impact and will be resume during the next year. Locfund II is not able to join tis efforts, but it is expected that Locfund Next will take the lead.
+
+
+- Potential secondary market transactions in El Salvador and Ecuador are expected to take place during the year.
+
+
+</div>
+</div>
+
+
+
+
+## SOCIAL PERFORMANCE {.tabset .tabset-fade .tabset-pills}
+
+### Exposure to Female clients
+
+```{r, echo = F, fig.align='center'}
+
+tbl_social <- base_sociales(params$year, param_mes)
+
+tbl_social %>% 
+  mutate(`Women clients (%)` = case_when(female_clients_percent <= 0.2 ~ "0% - 20%",
+                                  female_clients_percent > 0.2 & female_clients_percent <= 0.4 ~ "20% - 40%",
+                                  female_clients_percent > 0.4  & female_clients_percent <= 0.6 ~ "40% - 60%",
+                                  female_clients_percent > 0.6 & female_clients_percent <= 0.8 ~ "60% - 80%",
+                                  female_clients_percent > 0.8 ~ "80% - 100%")) %>% 
+  group_by(`Women clients (%)`) %>% 
+  summarise(`# of Locfund's MFIs` = n()) %>% 
+  hchart("column", name = "# of Locfund's MFIs", color = "#00C607",
+         hcaes(`Women clients (%)`, `# of Locfund's MFIs`)) %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  hc_tooltip(borderWidth = 0, valueDecimals = 0) %>% 
+  hc_plotOptions(column = list(
+    dataLabels = list(
+      enabled = F,
+      style = list(fontSize = "13px", textOutline = FALSE, color = "white", 
+                     fontFamily = "Open Sans")
+      )
+    )
+  ) %>% 
+  hc_size(height = 300) %>% 
+  hc_add_theme(lc_tema) %>% 
+  hc_title(text = "Hover your mouse over the bars to get more information") %>% 
+  hc_subtitle(text = "You can swith to the Rural Clients graph by clicking on its label") 
+```
+
+### Exposure to Rural Clients
+
+```{r, echo = F, fig.align='center'}
+tbl_social <- base_sociales(params$year, param_mes)
+
+tbl_social %>% 
+  mutate(`Rural clients (%)` = case_when(rural_clients_percent <= 0.2 ~ "0% - 20%",
+                                         rural_clients_percent > 0.2 & rural_clients_percent <= 0.4 ~ "20% - 40%",
+                                         rural_clients_percent > 0.4  & rural_clients_percent <= 0.6 ~ "40% - 60%",
+                                         rural_clients_percent > 0.6 & rural_clients_percent <= 0.8 ~ "60% - 80%",
+                                         rural_clients_percent > 0.8 ~ "80% - 100%")) %>% 
+  group_by(`Rural clients (%)`) %>% 
+  summarise(`# of Locfund's MFIs` = n()) %>% 
+  hchart("column", name = "# of Locfund's MFIs", color = "#00C607",
+         hcaes(`Rural clients (%)`, `# of Locfund's MFIs`)) %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  hc_tooltip(borderWidth = 0, valueDecimals = 0) %>% 
+  hc_plotOptions(column = list(
+    dataLabels = list(
+      enabled = F,
+      style = list(fontSize = "13px", textOutline = FALSE, color = "white", 
+                     fontFamily = "Open Sans")
+    )
+  )
+) %>% 
+  hc_size(height = 300) %>% 
+  hc_add_theme(lc_tema) %>% 
+  hc_title(text = "Hover your mouse over the bars to get more information") %>% 
+  hc_subtitle(text = "You can swith to the Female Clients graph by clicking on its label") 
+```
+
+<br>
+
+## COUNTRY EXPOSURE
+
+```{r, echo = F}
+
+df_imf <- country_analysis(params$year, param_mes)
+
+temp <- df_imf %>% group_by(country) %>% 
+  summarise(portfolio = sum(total)) %>% 
+  arrange(desc(portfolio)) %>% 
+  mutate(
+    num = 1:nrow(.),
+    prop = prop.table(portfolio)*100,
+    prop = round(prop, 2),
+    etiqueta = paste0(country, " (", prop, "%)")
+  )
+
+temp$portfolio <- round(temp$portfolio/1000000,2)
+
+# adjuntamos cantidad de MFIs y de operaciones
+
+temp %<>% 
+  left_join(df_imf %>% select(country, entidad) %>% distinct() %>% # adjuntamos Operaciones
+              group_by(country) %>% 
+              summarise(operaciones = n()),
+            by = "country") %>% 
+  left_join(df_imf %>% select(country, entity_hom) %>% distinct() %>% # adjuntamos MFIs
+              group_by(country) %>% 
+              summarise(mfis = n()),
+            by = "country")
+
+
+colores <- c( "#152614", "#0a2e36", "#223542", "#166b60", "#1e441e", "#036d19", "#2a7221","#09a129", "#1dad5e", "#4dfe15",
+              "#119822","#31cb00", "#14cc60", "#27fb6b")
+
+temp %>% hchart(
+  "pie", hcaes(x = country, y = portfolio),
+  borderWidth = 0
+) %>% 
+  hc_tooltip(
+    valueDecimals = 0, borderWidth = 0.001,
+    pointFormat=paste("<b>{point.country}</b><br>
+                      Portfolio: {point.portfolio}MM ({point.prop}%)<br>
+                      MIFs: {point.mfis} <br>
+                      Operations: {point.operaciones}"),
+    headerFormat = "") %>% 
+  hc_colors(c(colores)) %>% 
+  hc_add_theme(lc_tema) %>% 
+  hc_chart(backgroundColor="#FFFFFF") %>% 
+  hc_title(text = "Hover your mouse over each country to know the Portfolio share")
+
+```
+
+
+```{r}
+
+df_imf <- country_analysis(params$year, param_mes)
+
+temp <- df_imf %>% group_by(country, entity_hom) %>% 
+  summarise(portfolio = sum(total)) %>% 
+  ungroup() %>% 
+  # arrange(desc(portfolio)) %>% 
+  mutate(
+    # num = 1:nrow(.),
+    prop = prop.table(portfolio)*100,
+    prop = round(prop, 2)
+    # etiqueta = paste0(country, " (", prop, "%)")
+  )
+
+
+temp$portfolio <- round(temp$portfolio/1000000,2)
+
+colores <- temp %>% select(country) %>% unique
+
+col <- rep(c("#152614", "#0a2e36", "#223542", "#166b60", "#1e441e", "#036d19", "#2a7221","#09a129", "#1dad5e", "#4dfe15",
+             "#119822","#31cb00", "#14cc60", "#27fb6b"), 2)
+
+
+col <- col[1: nrow(colores)]
+
+colores %<>% 
+  mutate(
+    color = col
+  )
+
+temp %<>% merge(., colores, alll.x = T)
+
+
+lvl_opts <-  list(
+  list(
+    level = 1,
+    borderWidth = 0,
+    borderColor = "transparent",
+    dataLabels = list(
+      enabled = TRUE,
+      align = "left",
+      verticalAlign = "top",
+      style = list(fontSize = "16px", textOutline = FALSE, 
+                   color = "white", fontFamily = "Open Sans")
+    )
+  ),
+  list(
+    level = 2,
+    borderWidth = 0,
+    borderColor = "transparent",
+    colorVariation = list(key = "brightness", to = 0.250),
+    dataLabels = list(
+      enabled = T,
+      align = "right",
+      verticalAlign = "bottom",
+      style = list(fontSize = "8px", textOutline = FALSE, 
+                   color = "lightgray", fontFamily = "Open Sans")
+    )
+  )
+)
+
+cols <- temp %>% pull(color) %>% unique
+
+
+hchart(
+  data_to_hierarchical(temp, c(country, entity_hom), prop, colors = cols),
+  type = "treemap",
+  levelIsConstant = T,
+  allowDrillToNode = T,
+  drillUpButton = list(
+    text = "< Return"
+  ),
+  levels = lvl_opts,
+  tooltip = list(valueDecimals = 2) 
+) %>% 
+  hc_size(height = 700) %>% 
+  hc_tooltip(borderWidth =  0.001, valueSuffix = "%") %>% 
+  hc_credits(
+    enabled = TRUE,
+    text = "",
+    style = list(fontFamily = "Open Sans", fontSize = 13)
+  ) %>% 
+  hc_add_theme(lc_tema) %>% 
+  hc_chart(backgroundColor="#FFFFFF") %>% 
+  hc_title(text = "Hover your mouse over each country to know the Portfolio share") %>% 
+  hc_subtitle(text = "Yo can click on each country to see the overall MFIs on each one") 
+
+```
+
+## OUR TEAM
+
+```{r}
+
+temp <- data.frame(Position = c( "General Manager",
+                                     "Director, Latin America and the Caribbean", 
+                                     "TSF Director", 
+                                     "Capital Markets Officer", 
+                                     "Credit Officer",  
+                                     "Credit Officer",
+                                 "Credit Officer",
+                                     "Leading Consultant - TSF"),
+                       Name = c( "Fernando Sanchez", 
+                                 "Cesar Castillo",  
+                                 "Verónica Céspedes", 
+                                 "Veronica Zamora",
+                                 "Rolando Pereira",
+                                 "Marcia Gutierrez", 
+                                  "Jorge Amestegui",
+                                 "Pedro Fardella"),
+                       `e-mail` = c( "fsanchez@locfund.com", 
+                                     "ccastillo@locfund.com", 
+                                     "vcespedes@locfund.com", 
+                                     "vzamora@locfund.com",
+                                     "rpereira@bim-bfm.com", 
+                                     "mgutierrez@bim-bfm.com",
+                                     "jamestegui@bim-bfm.com",
+                                     "pfardella@locfund.com"))
+
+reactable(
+  temp,
+  bordered = TRUE,
+  striped = TRUE,
+  highlight = TRUE,
+  # defaultPageSize = 15,
+  # resizable = TRUE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+  ),
+  columns = list(
+    Position = colDef(minWidth = 170),
+    Name = colDef(minWidth = 150),
+    `e.mail` = colDef(minWidth = 150)))
+  
+
+```
+
+# SOCIAL IMPACT
+
+<div>
+  
+  <center>
+  <img src="img/1no_poverty.png" heigth = 15% width = 15%/> &nbsp; &nbsp;
+  <img src="img/5gender_eq.png" heigth = 15% width = 15%/> &nbsp; &nbsp;
+  <img src="img/8growth.png" heigth = 15% width = 15%/> &nbsp; &nbsp;
+  <img src="img/10inequalities.png" heigth = 15% width = 15%/> 
+  </center>
+  
+</div>
+
+
+
+## SOCIAL HIGHLIGHTS
+
+
+<!-- <div class = "row"> -->
+
+<!-- <div class = "col-md-6"> -->
+
+During the pandemic, MFIs had to make significant adjustments to their internal operations and cost reduction in order to increase efficiency. However, they have not lost the client focus, and we would like to highlight some remarkable measures with three emphasis (staff members, clients and community): 
+
+1. Appointing of a senior, fully dedicated person (part of the Board in some cases) focused on response to the Covid-19, 
+
+2. Develop a specific response plan (e.g. Contactar, Ahsetfin, AMC, Adisa),
+
+3. Taking a customer-centric approach to keep in touch, support them and teach them to deal with the sanitary crisis (e.g. MiCredito, Espoir, Insotec, Diaconia, Contactar), 
+
+4. Educate clients about alternative digital channels to reduce social contact (e.g. Espoir, Pro Mujer, Ilumina, Idepro), and 
+
+5. Enable staff to work remotely (e.g. Contactar, Pro Mujer, Diaconía, Adisa).
+
+<!-- </div> -->
+
+<!-- <div class = "col-md-6"> -->
+
+
+
+<!-- </div> -->
+<!-- </div> -->
+
+
+
+
+## DEVELOPMENTAL GOALS
+
+(Below Data pertains exclusively to MFIs in fund´s portfolio) 
+
+(Most recent Social Indicators available, as of December 2020)
+
+```{r}
+
+tbl_social <- base_sociales(params$year, param_mes)
+
+temp <- data.frame(Clients  = c("Total number of clients", 
+                        "Female clients (%)", 
+                        "Rural Clients (%)", 
+                        "Average loan size (c)", 
+                        "Total clients reached by LOCFUND II financing",
+                        "Avg. loan size/GDP per capita (d)",
+                        "Write-offs (%)"),
+           Current = c(round(sum(tbl_social$number_of_clients),2),
+                       round((sum(tbl_social$female_clients)/sum(tbl_social$number_of_clients))*100,2),
+                       round((sum(tbl_social$rural_clients)/sum(tbl_social$number_of_clients))*100,2),
+                       1358,
+                       203862,
+                       89,
+                       round(mean(tbl_social$write_offs_percent*100),2)
+                       ),
+           Goal = c("Not Applicable",
+                    ">= 50%",
+                    ">= 35%",
+                    "<= 1,200",
+                    ">= 85,000",
+                    ">= 50%",
+                    "<= 3%"),
+           Deadline = c("Not Applicable",
+                        "Year 6",
+                        "Year 6",
+                        "Year 4",
+                        "Year 8",
+                        "Year 6",
+                        "Year 6"),
+           Status = c("Not Applicable",
+                      ifelse(round((sum(tbl_social$female_clients)/sum(tbl_social$number_of_clients))*100,2)>50, "Compliant", "In process"),
+                      ifelse(round((sum(tbl_social$rural_clients)/sum(tbl_social$number_of_clients))*100,2)>35, "Compliant", "In process"),
+                      ifelse(1355.42 <= 1200,"Compliant", "In process"),
+                      ifelse(204198.85 <= 85000,"Compliant", "In process"),
+                      ifelse(90 >= 50,"Compliant", "In process"),
+                      ifelse(round(mean(tbl_social$write_offs_percent*100),2)<=0.03,"Compliant", "In process"))) 
+
+reactable(
+  temp,
+  bordered = TRUE,
+  striped = TRUE,
+  highlight = TRUE,
+  # defaultPageSize = 15,
+  # resizable = TRUE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+  ),
+  columns = list(
+    Clients = colDef(minWidth = 170),
+    Current = colDef(minWidth = 100,
+                     format = colFormat(separators = TRUE)),
+    Deadline = colDef(minWidth = 100),
+    Status = colDef(minWidth = 100)))
+
+
+```
+
+
+## SOCIAL PERFORMANCE
+
+(Social Performance Data pertains exclusively to MFIs in fund´s portfolio) (Most recent Social Indicators available, as of December 2020)
+
+```{r}
+
+
+
+tbl_social <- base_sociales(params$year, param_mes)
+
+
+tbl_social$mes <-  month(tbl_social$data_as_of)
+tbl_social$gestion <- year(tbl_social$data_as_of)
+
+
+tbl_social %<>% 
+  mutate(mes = case_when(mes == 1 ~ "January",
+                         mes == 2 ~ "February",
+                         mes == 3 ~ "March",
+                         mes == 4 ~ "April",
+                         mes == 5 ~ "May",
+                         mes == 6 ~ "June",
+                         mes == 7 ~ "July",
+                         mes == 8 ~ "August",
+                         mes == 9 ~ "September",
+                         mes == 10 ~ "October",
+                         mes == 11 ~ "November",
+                         mes == 12 ~ "December"),
+         data_as_of = paste(mes,",",gestion))
+
+
+reactable(
+  tbl_social %>% select(-data_as_of, -female_clients,-rural_clients,-gestion,-mes),
+  # filterable = TRUE, 
+  bordered = TRUE, 
+  striped = TRUE, 
+  highlight = TRUE, 
+  defaultPageSize = 15,
+  # resizable = TRUE, 
+  # wrap = FALSE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+  ),
+  groupBy = c("country"),
+  columns = list(
+    country = colDef(name = "Country",
+                     minWidth = 170),
+    nombre_mfi = colDef(name = "MFIs",
+                        # aggregate = "unique",
+                        footer = "Total",
+                        minWidth = 150),
+    # data_as_of = colDef(name = "Data as of"),
+    # format = list(
+    #   cell = colFormat(date = TRUE),
+    #   aggregated = colFormat(suffix = " dates"))),
+    loan_portfolio_usd_mm = colDef(name = "Loan Portfolio (USD MM)",
+                                   aggregate = "sum",
+                                   format = colFormat(suffix = " MM", separators = TRUE),
+                                   footer = function(values) sprintf("%.2f", sum(values)),
+                                   minWidth = 150),
+    number_of_clients = colDef(name = "Number of Clients",
+                               aggregate = "sum",
+                               footer = function(values) sprintf("%.0f", sum(values)),
+                               format = colFormat(separators = TRUE)),
+    female_clients_percent = colDef(name = "Female clients (%)",
+                                    aggregate = "mean",
+                                    format = colFormat(percent = TRUE, digits = 1)),
+    rural_clients_percent = colDef(name = "Rural clients (%)",
+                                   aggregate = "mean",
+                                   format = colFormat(percent = TRUE, digits = 1)),
+    average_loan_usd = colDef(name = "Average loan (USD)",
+                              aggregate = "mean",
+                              format = colFormat(separators = TRUE, digits = 2)),
+    average_loan_gdp_per_capita = colDef(name = "Average loan/GDP per Capita",
+                                         format = colFormat(percent = TRUE, digits = 1)),
+    write_offs_percent = colDef(name = "Writeoffs (%)",
+                                format = colFormat(percent = TRUE, digits = 1)),
+    endorsed_to_the_smart_campaign = colDef(name = "Endorsed to the Smart Campaign"),
+    ppi_users_k = colDef(name = "PPI Users (k)"),
+    social_rating = colDef(name = "Social Rating"),
+    social_rating_report_year = colDef(name = "Social Rating Report Year"),
+    unique_clients = colDef(name = "Unique Clients"),
+    banked_or_first_clients = colDef(name = "Banked of First Clients")
+  ),
+  defaultColDef = colDef(footerStyle = list(fontWeight = "bold"))
+)
+
+
+
+```
+
+<center>
+```{r}
+
+base_sociales(params$year, param_mes) %>% 
+  download_this(
+    output_name = "social_performance",
+    output_extension = ".xlsx",
+    button_label = "Download Social Performance Data",
+    button_type = "success",
+    has_icon = TRUE,
+    icon = "fa fa-table"
+  )
+
+```
+</center>
+
+## SOCIAL INDICATORS
+
+### GENERAL SOCIAL INDICATORS
+
+
+
+```{r}
+
+## Barras Drill Down Social
+
+
+temp <- base_sociales(params$year, param_mes)
+
+temp1 <- temp %>% group_by(country) %>% 
+  summarise(perc_avg_female = round(weighted.mean(female_clients_percent, number_of_clients)*100,2), # 
+            perc_avg_rural = round(weighted.mean(rural_clients_percent, number_of_clients)*100,2),
+            cantidad = sum(number_of_clients),
+            loan_portfolio = round(sum(loan_portfolio_usd_mm),2))
+
+temp2 <- temp %>% group_by(country, nombre_mfi) %>% 
+  summarise(perc_avg_female = round(weighted.mean(female_clients_percent, number_of_clients)*100,2),
+            perc_avg_rural = round(weighted.mean(rural_clients_percent, number_of_clients)*100,2),
+            cantidad = sum(number_of_clients),
+            loan_portfolio = round(sum(loan_portfolio_usd_mm),2)) %>% 
+  group_nest(country) %>% 
+  mutate(id = country,
+         type = "column",
+         data = map(data, mutate, name = nombre_mfi, y = loan_portfolio),
+         data = map(data, list_parse))
+
+
+tt <- tooltip_table(c("Loan Portfolio", "Num. of Clients", "Percentage Female Clients:", "Percentage Rural Clients:"),
+                    c("{point.loan_portfolio:.0f} (USD MM)", "{point.cantidad:.0f}", "{point.perc_avg_female:.0f} %", "{point.perc_avg_rural:.0f} %"))
+
+hchart(
+  temp1 %>% arrange(desc(loan_portfolio)),
+  "column",
+  hcaes(x = country, y = loan_portfolio, name = country, drilldown = country),
+  name = "Loan portfolio",
+  colorByPoint = TRUE
+) %>% 
+  hc_drilldown(
+    allowPointDrilldown = TRUE,
+    series = list_parse(temp2)
+  ) %>% 
+  hc_tooltip(
+    pointFormat = tt, # "{point.name} {point.pop}"
+    useHTML = TRUE,
+    valueDecimals = 0
+  ) %>% 
+  hc_yAxis(
+    title = list(text = "Loan Portfolio (USD MM)")
+  ) %>% 
+  hc_xAxis(
+    title = ""
+  ) %>% 
+  hc_colors(c("#00C607"
+  )) %>%
+  hc_title(text = 'Hover your mouse and click on each <span style="color: #44DBDB"><b>lightblue country name</b></span> for more information', useHTML = TRUE) %>% 
+  hc_add_theme(lc_tema) 
+```
+
+## FEMALE AND RURAL DISTRIBUTIONS {.tabset .tabset-fade .tabset-pills}
+
+### FEMALE PERCENTAGE
+
+```{r}
+temp <- base_sociales(params$year, param_mes)
+
+temp %<>% select(nombre_mfi, country, loan_portfolio_usd_mm, number_of_clients, female_clients_percent) %>% 
+  mutate(male_clients_percent = 1-female_clients_percent,
+         female_clients = round(female_clients_percent*number_of_clients, 0),
+         male_clients  = round(-male_clients_percent*number_of_clients, 0),
+         loan_portfolio_usd_mm = round(loan_portfolio_usd_mm,0)) %>% 
+  arrange(desc(loan_portfolio_usd_mm)) %>% 
+  rename(Female = female_clients, Male = male_clients) %>% 
+  gather(genero, clientes, - nombre_mfi, -country, -loan_portfolio_usd_mm, -number_of_clients, - female_clients_percent, -male_clients_percent ) %>% 
+  mutate(porcent = if_else(genero == "Female", female_clients_percent, male_clients_percent),
+         porcent = round(porcent*100, 0)) %>% view
+
+
+
+temp %>% 
+  hchart("bar", hcaes(as.factor(loan_portfolio_usd_mm), clientes, group = genero)) %>% 
+  hc_plotOptions(bar = list(
+    dataLabels = list(enabled = FALSE),
+    stacking = "normal",
+    enableMouseTracking = TRUE,
+    pointWidth = 10)
+  ) %>% 
+  hc_xAxis(
+    # categories = .$loan_portfolio_usd_mm,
+    reversed = FALSE,
+    labels=list(step= 1),
+    title= list(text= "Loan Portfolio (USD MM)")) %>% 
+  hc_yAxis(title= list(text= "Number of Clients"),
+           labels = list(formatter=JS("function () {
+               return Math.abs(this.value);
+             }"))) %>% 
+  hc_legend(reversed = T) %>% 
+  hc_tooltip(valueDecimals = 0, borderWidth = 0.01,
+             crosshairs = T, shared = FALSE, 
+             formatter = JS("function () {
+                   return '<b>' + 'Country: ' + '</b>' + this.point.country +'<br/>' +
+                   '<b>' + 'MFI: ' + '</b>' + this.point.nombre_mfi +'<br/>' +
+                   '<b>' + 'Loan Porfolio: ' + '</b>' + this.point.loan_portfolio_usd_mm + ' MM' +'<br/>' +
+                   '<b>' + 'Number of Clients: ' + '</b>' + this.point.number_of_clients + '<br/>' +
+                   '<b>' + this.series.name + ' clients' + '</b> ' + Highcharts.numberFormat(Math.abs(this.point.y), 1) + ' (' + this.point.porcent + '%)';}")) %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  hc_size(height = 700) %>% 
+  hc_add_theme(lc_tema) %>% 
+  hc_subtitle(text = "Hover your mouse over the bars to get more information<br>Yopu can select and de-select the <strong>Male</strong> or <strong>Female</strong> categories below<br>You can swith to the Rural Percentage graph by clicking on its label", useHTML = TRUE) 
+
+```
+
+### RURAL PERCENTAGE
+
+```{r}
+temp <- base_sociales(params$year, param_mes)
+
+temp  %<>% select(nombre_mfi, country, loan_portfolio_usd_mm, number_of_clients, rural_clients_percent)  %>% 
+  mutate(urban_clients_percent = 1-rural_clients_percent,
+         rural_clients = rural_clients_percent*number_of_clients,
+         urban_clients  = -urban_clients_percent*number_of_clients,
+         loan_portfolio_usd_mm = round(loan_portfolio_usd_mm,2)) %>% 
+  arrange(desc(loan_portfolio_usd_mm)) %>% 
+  rename(Rural = rural_clients, Urban = urban_clients) %>% 
+  gather(genero, clientes, - nombre_mfi, -country, -loan_portfolio_usd_mm, -number_of_clients, - rural_clients_percent, -urban_clients_percent ) %>% 
+  mutate(porcent = if_else(genero == "Rural", rural_clients_percent, urban_clients_percent),
+         porcent = round(porcent*100))
+
+
+
+temp %>% 
+  hchart("bar", hcaes(as.factor(loan_portfolio_usd_mm), clientes, group = genero)) %>% 
+  hc_plotOptions(bar = list(
+    dataLabels = list(enabled = FALSE),
+    stacking = "normal",
+    enableMouseTracking = TRUE,
+    pointWidth = 10)
+  ) %>% 
+  hc_xAxis(
+    # categories = .$loan_portfolio_usd_mm,
+    reversed = FALSE,
+    labels=list(step= 1),
+    title= list(text= "Loan Portfolio (USD MM)")) %>% 
+  hc_yAxis(title= list(text= "Number of Clients"),
+           labels = list(formatter=JS("function () {
+               return Math.abs(this.value);
+             }"))) %>% 
+  hc_legend(reversed = T) %>% 
+  hc_tooltip(valueDecimals = 0, borderWidth = 0.01,
+             crosshairs = T, shared = FALSE, 
+             formatter = JS("function () {
+                   return '<b>' + 'Country: ' + '</b>' + this.point.country +'<br/>' +
+                   '<b>' + 'MFI: ' + '</b>' + this.point.nombre_mfi +'<br/>' +
+                   '<b>' + 'Loan Porfolio: ' + '</b>' + this.point.loan_portfolio_usd_mm + ' MM' +'<br/>' +
+                   '<b>' + 'Number of Clients: ' + '</b>' + this.point.number_of_clients + '<br/>' +
+                   '<b>' + this.series.name + ' clients' + '</b> ' + Highcharts.numberFormat(Math.abs(this.point.y), 1) + ' (' + this.point.porcent + '%)';}")) %>% 
+  hc_chart(style = list(fontFamily = "Open Sans")) %>% 
+  hc_size(height = 700) %>% 
+  hc_add_theme(lc_tema) %>% 
+  hc_subtitle(text = "Hover your mouse over the bars to get more information<br>Yopu can select and de-select the <strong>Male</strong> or <strong>Female</strong> categories below<br>You can swith to the Female Percentage graph by clicking on its label", useHTML = TRUE)   
+
+```
+
+
+## DEVELOPMENTAL GOALS CHART
+
+```{r}
+
+temp <- base_sociales(params$year, param_mes) %>%
+  mutate(female_clients_percent = ifelse(is.na(female_clients_percent), 0 ,female_clients_percent),
+         rural_clients_percent = ifelse(is.na(rural_clients_percent),0, rural_clients_percent),
+         size_clients = sqrt(number_of_clients)/4,
+         female_clients_percent = round(female_clients_percent*100,2),
+         rural_clients_percent = round(rural_clients_percent*100,2),
+         normalizacion = log(size_clients),
+         mes = lubridate::month(data_as_of, label = T, abbr = F),
+         año = lubridate::year(data_as_of),
+         date = paste0(mes, ", ", año)
+         )
+
+
+
+colores <- c( "#152614", "#0a2e36", "#223542", "#166b60", "#1e441e", "#036d19", "#2a7221","#09a129", "#1dad5e", "#4dfe15",
+              "#119822","#31cb00", "#14cc60", "#27fb6b")
+
+
+median_vertical <- median(temp$female_clients_percent) %>% round(., 0)
+median_horizontal <- median(temp$rural_clients_percent) %>% round(., 0)
+
+temp <- bind_rows(temp, data.frame(country = c(unique(df_sociales$country)[which(!unique(df_sociales$country) %in% unique(temp$country))])))
+
+temp %<>% group_split(country)
+
+highchart() %>%
+  hc_add_series(type = "scatter", temp[[1]], hcaes(female_clients_percent,
+                                                   rural_clients_percent,
+                                                   size = normalizacion,
+                                                   group = country),
+                name = (temp[[1]]$country %>% unique), visible = F,
+                color = "#44DBDB") %>%
+  hc_add_series(type = "scatter", temp[[2]], hcaes(female_clients_percent,
+                                                   rural_clients_percent,
+                                                   size = normalizacion,
+                                                   group = country),
+                name = (temp[[2]]$country %>% unique), visible = F,
+                color = "#28F322") %>%
+  hc_add_series(type = "scatter", temp[[3]], hcaes(female_clients_percent,
+                                                   rural_clients_percent,
+                                                   size = normalizacion,
+                                                   group = country),
+                name = (temp[[3]]$country %>% unique), visible = F) %>%
+  hc_add_series(type = "scatter", temp[[4]], hcaes(female_clients_percent,
+                                                   rural_clients_percent,
+                                                   size = normalizacion,
+                                                   group = country),
+                name = (temp[[4]]$country %>% unique), visible = F,
+                color = "#4B4B63") %>%
+  hc_add_series(type = "scatter", temp[[5]], hcaes(female_clients_percent,
+                                                   rural_clients_percent,
+                                                   size = normalizacion,
+                                                   group = country),
+                name = (temp[[5]]$country %>% unique), visible = F,
+                color = "#C7205D") %>%
+  hc_add_series(type = "scatter", temp[[6]], hcaes(female_clients_percent,
+                                                   rural_clients_percent,
+                                                   size = normalizacion,
+                                                   group = country),
+                name = (temp[[6]]$country %>% unique), visible = F,
+                color = "#474545") %>%
+  hc_add_series(type = "scatter", temp[[7]], hcaes(female_clients_percent,
+                                                   rural_clients_percent,
+                                                   size = normalizacion,
+                                                   group = country),
+                name = (temp[[7]]$country %>% unique), visible = F,
+                color = "#687EA8") %>%
+  hc_add_series(type = "scatter", temp[[8]], hcaes(female_clients_percent,
+                                                   rural_clients_percent,
+                                                   size = normalizacion,
+                                                   group = country),
+                name = (temp[[8]]$country %>% unique), visible = F,
+                color = "#E0403A") %>%
+  hc_add_series(type = "scatter", temp[[9]], hcaes(female_clients_percent,
+                                                   rural_clients_percent,
+                                                   size = normalizacion,
+                                                   group = country),
+                name = (temp[[9]]$country %>% unique), visible = F,
+                color = "#EC9A29" ) %>%
+  hc_add_series(type = "scatter", temp[[10]], hcaes(female_clients_percent,
+                                                    rural_clients_percent,
+                                                    size = normalizacion,
+                                                    group = country),
+                name = (temp[[10]]$country %>% unique), visible = F,
+                color = "#E1E1E4") %>%
+  hc_add_series(type = "scatter", temp[[11]], hcaes(female_clients_percent,
+                                                    rural_clients_percent,
+                                                    size = normalizacion,
+                                                    group = country),
+                name = (temp[[11]]$country %>% unique), visible = F) %>%
+  hc_add_series(type = "scatter", temp[[12]], hcaes(female_clients_percent,
+                                                    rural_clients_percent,
+                                                    size = normalizacion,
+                                                    group = country),
+                name = (temp[[12]]$country %>% unique), visible = F,
+                color = "#B34B47") %>%
+  hc_add_series(type = "scatter", temp[[13]], hcaes(female_clients_percent,
+                                                    rural_clients_percent,
+                                                    size = normalizacion,
+                                                    group = country),
+                name = (temp[[13]]$country %>% unique), visible = F,
+                color = "#639163") %>%
+  hc_tooltip(enabled = T, valueDecimals = 0, borderWidth = 0.01,
+             pointFormat=paste("<b>MFI</b>: {point.nombre_mfi}<br>
+                                <b>Date of report</b>: {point.date}<br>
+                                <b>Loan Portfolio</b>: {point.loan_portfolio_usd_mm}(USD MM)<br>
+                                <b>Total Clients</b>: {point.number_of_clients}<br>
+                                <b>Female Clients</b>: {point.female_clients_percent}%<br>
+                                <b>Rural Clients</b>: {point.rural_clients_percent}%")) %>%
+  hc_yAxis(title = list(text = "% Rural Clients"),
+           plotLines = list(
+             list(
+                label = list(
+                 text = "Percent Goal (35%)",
+                 style = list(
+                   color = "#A7A7B7"
+                 )
+               ),
+               color = "#A7A7B7",
+               width = 1,
+               value = 35
+             )
+           )) %>%
+  hc_xAxis(title = list(text = "% Female Clients"),
+           plotLines = list(
+             list(
+               label = list(
+                 text = "Percent Goal (50%)",
+                 style = list(
+                   color = "#A7A7B7"
+                 )
+               ),
+               color = "#A7A7B7",
+               width = 1,
+               value = 50
+             )
+           )) %>%
+  hc_title(text = "Social Impact") %>%
+  hc_subtitle(text = "Select any country by clicking on its name") %>%
+  hc_caption(text = "Bubble's dimension represent portfolio size") %>%
+  hc_chart(style = list(fontFamily = "Open Sans")) %>%
+  hc_add_theme(lc_tema)
+
+```
+
+
+## POVERTY AND INCOME INDICATORS {.tabset .tabset-fade .tabset-pills}
+
+### LOCFUND II COUNTRY EXPOSURE
+```{r}
+
+temp_poverty <- rio::import("input/temp_poverty_income.xlsx")[1:6] %>% 
+  janitor::clean_names() %>% 
+  mutate(locfund_ii_portfolio_d = round(locfund_ii_portfolio_d,0),
+         gdp_usd_e_3 = round(gdp_usd_e_3,0),
+         hdi_f_4 = round(hdi_f_4,3),
+         percent_npl_g_5 = round(percent_npl_g_5,1),
+         gini_coefficient_h_6 = round(gini_coefficient_h_6,1))
+
+
+reactable(temp_poverty,
+          bordered = TRUE,
+          striped = TRUE,
+          highlight = TRUE,
+          defaultPageSize = 15,
+          # resizable = TRUE,
+          theme = reactableTheme(
+            borderColor = "#E1E1E4",
+            stripedColor = "#F4F4F5",
+            highlightColor = "#E8E8EA",
+            cellPadding = "8px 12px",
+            style = list(fontFamily = "Helvetica")
+          ),
+          columns = list(
+            locfund_ii_country_exposure = colDef(name = "COUNTRY",
+                                                 format = colFormat(separators = TRUE)),
+            locfund_ii_portfolio_d = colDef(name = "LOCFUND II PORTFOLIO (d)",
+                                            format = colFormat(separators = TRUE)),
+            gdp_usd_e_3 = colDef(name = "GDP USD (e)",
+                                 format = colFormat(separators = TRUE)),
+            hdi_f_4 = colDef(name = "HDI (f)"),
+            percent_npl_g_5 = colDef(name = "% NPL (g)"),
+            gini_coefficient_h_6 = colDef(name = "Gini Coefficient (h)")))
+
+
+```
+
+### OTHER COUNTRIES
+```{r}
+
+temp_income <- rio::import("input/temp_poverty_income.xlsx")[8:12] %>% 
+  janitor::clean_names() %>% 
+  mutate(gdp_usd_e_9 = round(gdp_usd_e_9, 0),
+         hdi_f_10 = round(hdi_f_10,2),
+         percent_npl_g_11 = round(percent_npl_g_11,0),
+         gini_coefficient_h_12 = round(gini_coefficient_h_12,0))
+
+
+reactable(temp_income,
+          bordered = TRUE,
+          striped = TRUE,
+          highlight = TRUE,
+          defaultPageSize = 15,
+          # resizable = TRUE,
+          theme = reactableTheme(
+            borderColor = "#E1E1E4",
+            stripedColor = "#F4F4F5",
+            highlightColor = "#E8E8EA",
+            cellPadding = "8px 12px",
+            style = list(fontFamily = "Helvetica")
+          ),
+          columns = list(
+            other_countries = colDef(name = "COUNTRY"),
+            gdp_usd_e_9 = colDef(name = "GDP USD (e)",
+                                                 format = colFormat(separators = TRUE)),
+            hdi_f_10 = colDef(name = "HDI (f)"),
+            percent_npl_g_11 = colDef(name = "% NPL (g)"),
+            gini_coefficient_h_12 = colDef(name = "Gini Coefficient (h)")))
+
+```
+
+##
+
+
+<div class = "row">
+  
+<div class = "col-md-6">
+
+
+a. PPI: Progress out of Poverty Index. As reported by the MFI to the PPI (<http://www.progressoutofpoverty.org/ppi-users>).\
+b. In accordance to the document elaborated by MIF/IDB in Nov 2014 named "Financial Inclusion Latin America and the Caribbean", the microfinance average of loan in the region is USD 1.800.   
+c. At Least 50% of Locfund II's clients will have an average loan size to final clients of less than 40% of GDP per capita.      
+d. Principal + Interest as of December 2020.\
+e. GDP: Gross domestic product per capita, GDP per capita, PPP (constant 2017 international $), source: (<https://data.worldbank.org/indicator/NY.GDP.PCAP.PP.KD>) (<https://www.imf.org/en/Publications/WEO/weo-database/2020/April/select-country-group>)\
+
+</div>
+  
+<div class = "col-md-6">
+
+f. HDI (Human Development Index). Source: 2019 Report, data compiled form official web site (<http://hdr.undp.org/en/data#>)
+g. Population below national poverty line (NPL). Source: (<https://www.cia.gov/library/publications/the-world-factbook/>)      
+h. Gini Coefficient: Measure of the deviation of the distribution of income among individuals or households within a country from a perfectly equal distribution. A value of 0 represents absolute equality, a value of 100 absolute inequality. Source: (<https://data.worldbank.org/indicator/SI.POV.GINI>)
+N/A Not Available.
+
+</div>
+</div>
+
+
+# FINANCIAL STATEMENT
+
+## BALANCE SHEET {.tabset .tabset-fade .tabset-pills}
+
+### BALANCE SHEET
+
+```{r}
+
+df_total <- bind_rows(df_base %>% filter(gestion == params$year ,tipo %in% c("ASSETS", "EQUITY", "LIABILITIES")) %>% 
+        group_by(tipo, mes) %>% 
+        summarise(total = sum(valor, na.rm = TRUE)), # hasta este punto adjuntamos por tipo
+      df_base %>% filter(gestion == params$year ,tipo %in% c("EQUITY", "LIABILITIES")) %>% # a partir de aqui creamos LIAB + EQUITY
+        group_by(mes) %>% 
+        summarise(total = sum(valor, na.rm = TRUE)) %>% 
+        mutate(tipo = "LIABILITIES AND EQUITY")) %>% 
+  mutate(mes = case_when(mes == 1 ~ "January",
+                         mes == 2 ~ "February",
+                         mes == 3 ~ "March",
+                         mes == 4 ~ "April",
+                         mes == 5 ~ "May",
+                         mes == 6 ~ "June",
+                         mes == 7 ~ "July",
+                         mes == 8 ~ "August",
+                         mes == 9 ~ "September",
+                         mes == 10 ~ "October",
+                         mes == 11 ~ "November",
+                         mes == 12 ~ "December"),
+         total = round(total,0)) %>% 
+  spread(mes, total) %>%  
+  filter(tipo %in% c("ASSETS", "EQUITY", "LIABILITIES", "LIABILITIES AND EQUITY")) %>% 
+  select(tipo, 
+         January, February, March, April, May, June, July, August, September, October, November, December) %>% 
+  mutate(tipo = case_when(tipo == "ASSETS" ~ "Total Assets",
+                          tipo == "EQUITY" ~ "Total Equity",
+                          tipo == "LIABILITIES" ~ "Total Liabilities",
+                          tipo == "LIABILITIES AND EQUITY" ~ "Total Liabilities and Equity"))
+
+sticky_style <- list(position = "sticky", left = 0, background = "#fff", zIndex = 1,
+                     borderRight = "1px solid #eee")
+
+reactable(
+  df_total,
+  # filterable = TRUE,
+  bordered = TRUE,
+  striped = TRUE,
+  highlight = TRUE,
+  # defaultPageSize = 15,
+  # resizable = TRUE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+    ),
+  columns = list(
+    tipo = colDef(name = "BALANCE SHEET",
+                  minWidth = 150,
+                  style = sticky_style,
+                  headerStyle = sticky_style),
+    January = colDef(format = colFormat(separators = TRUE),
+                     minWidth = 110),
+    February = colDef(format = colFormat(separators = TRUE),
+                      minWidth = 110),
+    March = colDef(format = colFormat(separators = TRUE),
+                   minWidth = 110),
+    April = colDef(format = colFormat(separators = TRUE),
+                   minWidth = 110),
+    May = colDef(format = colFormat(separators = TRUE),
+                 minWidth = 110),
+    June = colDef(format = colFormat(separators = TRUE),
+                  minWidth = 110),
+    July = colDef(format = colFormat(separators = TRUE),
+                  minWidth = 110),
+    August = colDef(format = colFormat(separators = TRUE),
+                    minWidth = 110),
+    September = colDef(format = colFormat(separators = TRUE),
+                       minWidth = 110),
+    October = colDef(format = colFormat(separators = TRUE),
+                     minWidth = 110),
+    November = colDef(format = colFormat(separators = TRUE),
+                      minWidth = 110),
+    December = colDef(format = colFormat(separators = TRUE),
+                      minWidth = 110)
+  )
+  
+)
+
+```
+
+### ASSETS
+
+```{r}
+df_fs <-  df_base_horizontal(params$year)
+
+
+# Adjuntamos Meses vacios en caso de faltar
+nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)]
+df <- data.frame(matrix(ncol = length(temp), nrow = 1))
+colnames(df) <- temp
+df$tipo <- NA
+df_fs <- left_join(df_fs, df)
+
+
+
+df_fs_asset <- df_fs %>% filter(tipo == "ASSETS") %>% 
+  select(tipo, nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December)
+
+
+
+tabla <- tabla_vert(df_fs_asset)
+
+# tabla %<>% filter(!crudo %in% c("Accrued Interests", "Principal"), ! entidad %in% c(unique(tabla$entidad)))
+tabla %<>% filter(is.na(entidad))
+
+# Orden de filas
+tabla %<>% mutate(nivel1 = ifelse(is.na(nivel1) & !is.na(crudo), crudo, nivel1))
+
+# unique(tabla$nivel1)
+tabla <- tabla[order(match(tabla$nivel1, c(NA, "Cash and cash equivalent", "Additional Acces Fee - MFX", "Interest - MFX",
+                                           "Portfolio", "Hedged Assets", "Impairment Provision Reserve", "Management Fee paid in advance",
+                                           "D&O Insurance paid in advance", "Others"))),]
+
+
+
+tabla %<>% select(-c(tipo, nivel1, nivel2, entidad))
+tabla %<>% select(columna, "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", crudo, indent) 
+tabla %<>% mutate(columna = case_when(columna == "ASSETS" ~ "Total Assets",
+                                      TRUE ~ columna)) 
+
+tabla %<>% mutate(January = format(January,nsmall=0, big.mark=","),
+                  February = format(February,nsmall=0, big.mark=","),
+                  March = format(March,nsmall=0, big.mark=","),
+                  April = format(April,nsmall=0, big.mark=","),
+                  May = format(May,nsmall=0, big.mark=","),
+                  June = format(June,nsmall=0, big.mark=","),
+                  July = format(July,nsmall=0, big.mark=","),
+                  August = format(August,nsmall=0, big.mark=","),
+                  September = format(September,nsmall=0, big.mark=","),
+                  October = format(October,nsmall=0, big.mark=","),
+                  November = format(November,nsmall=0, big.mark=","),
+                  December = format(December,nsmall=0, big.mark=","))
+
+
+
+negro <- which(is.na(tabla$crudo))
+espacios_2 <- which(tabla$indent == 2)
+espacios_4 <- which(tabla$indent == 4)
+espacios_6 <- which(tabla$indent == 6)
+espacios_8 <- which(tabla$indent == 8)
+
+
+
+tabla %>% select(-crudo,-indent) %>% rename(Variable = columna) %>% 
+  kbl(caption = "ASSETS") %>%
+  kable_styling(latex_options = "striped", stripe_color = "#E32636", full_width = TRUE) %>%
+  kable_classic(full_width = F, html_font = "Helvetica") %>% 
+  row_spec(c(negro), bold = T) %>% 
+  add_indent(c(espacios_2), level_of_indent = 1) %>% 
+  add_indent(c(espacios_4), level_of_indent = 2) %>% 
+  add_indent(c(espacios_6), level_of_indent = 3) %>% 
+  add_indent(c(espacios_8), level_of_indent = 4) %>% 
+  kableExtra::scroll_box(width = "100%", height = "700px")
+
+
+
+
+
+```
+
+### LIABILITIES
+
+```{r}
+df_fs <-  df_base_horizontal(params$year)
+
+
+
+# Adjuntamos Meses vacios en caso de faltar
+nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)]
+df <- data.frame(matrix(ncol = length(temp), nrow = 1))
+colnames(df) <- temp
+df$tipo <- NA
+df_fs <- left_join(df_fs, df)
+
+
+
+df_fs_liab <- df_fs %>% filter(tipo == "LIABILITIES") %>% 
+  select(tipo, nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December)
+
+
+
+tabla <- tabla_vert(df_fs_liab)
+
+tabla %<>% filter(!crudo %in% c("Principal", "Accrued Interests") )
+
+
+# Orden de tabla
+tabla <- tabla[order(match(tabla$nivel1, c(NA, "Short Term Liabilities", "Long Term Liabilities"))),]
+
+
+tabla %<>% mutate(tipo = case_when(tipo == "LIABILITIES" ~ "Total Liabilites",
+                                  TRUE ~ tipo))
+
+
+tabla %<>% select(-c(tipo, nivel1, nivel2, entidad))
+tabla %<>% select(columna, "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", crudo, indent) 
+# tabla$columna <- paste0("`",tabla$columna)
+
+
+tabla %<>% mutate(January = format(January,nsmall=0, big.mark=","),
+                 February = format(February,nsmall=0, big.mark=","),
+                 March = format(March,nsmall=0, big.mark=","),
+                 April = format(April,nsmall=0, big.mark=","),
+                 May = format(May,nsmall=0, big.mark=","),
+                 June = format(June,nsmall=0, big.mark=","),
+                 July = format(July,nsmall=0, big.mark=","),
+                 August = format(August,nsmall=0, big.mark=","),
+                 September = format(September,nsmall=0, big.mark=","),
+                 October = format(October,nsmall=0, big.mark=","),
+                 November = format(November,nsmall=0, big.mark=","),
+                 December = format(December,nsmall=0, big.mark=","))
+
+negro <- which(is.na(tabla$crudo))
+espacios_2 <- which(tabla$indent == 2)
+espacios_4 <- which(tabla$indent == 4)
+espacios_6 <- which(tabla$indent == 6)
+espacios_8 <- which(tabla$indent == 8)
+
+
+
+tabla %>% select(-crudo,-indent) %>% rename(Variable = columna) %>% 
+  kbl(caption = "LIABILITIES") %>%
+  kable_styling(latex_options = "striped", stripe_color = "#E32636", full_width = TRUE) %>%
+  kable_classic(full_width = F, html_font = "Helvetica") %>% 
+  row_spec(c(negro), bold = T) %>% 
+  add_indent(c(espacios_2), level_of_indent = 1) %>% 
+  add_indent(c(espacios_4), level_of_indent = 2) %>% 
+  add_indent(c(espacios_6), level_of_indent = 3) %>% 
+  add_indent(c(espacios_8), level_of_indent = 4) %>% 
+  kableExtra::scroll_box(width = "100%", height = "700px")
+
+
+
+```
+
+### EQUITY
+
+```{r}
+df_fs <-  df_base_horizontal(params$year)
+
+
+
+# Adjuntamos Meses vacios en caso de faltar
+nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)]
+df <- data.frame(matrix(ncol = length(temp), nrow = 1))
+colnames(df) <- temp
+df$tipo <- NA
+df_fs <- left_join(df_fs, df)
+
+
+
+df_fs_liab <- df_fs %>% filter(tipo == "EQUITY") %>% 
+  select(tipo, nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December)
+
+
+
+tabla <- tabla_vert(df_fs_liab)
+
+
+# Orden de tabla
+tabla %<>% mutate(nivel1 = ifelse(is.na(nivel1) & !is.na(crudo), crudo, nivel1))
+
+tabla <- tabla[order(match(tabla$nivel1, c(NA, "Capital", "Accumulated Results", "Reserve for Currency Loss", "Period Profit/Loss Net of FX Reserves"))),]
+
+
+tabla %<>% mutate(tipo = case_when(tipo == "EQUITY" ~ "Total EQUITY",
+                                   TRUE ~ tipo))
+
+
+
+tabla %<>% select(-c(tipo, nivel1, nivel2, entidad))
+tabla %<>% select(columna, "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", crudo, indent) 
+# tabla$columna <- paste0("`",tabla$columna)
+
+
+tabla %<>% mutate(January = format(January,nsmall=0, big.mark=","),
+                  February = format(February,nsmall=0, big.mark=","),
+                  March = format(March,nsmall=0, big.mark=","),
+                  April = format(April,nsmall=0, big.mark=","),
+                  May = format(May,nsmall=0, big.mark=","),
+                  June = format(June,nsmall=0, big.mark=","),
+                  July = format(July,nsmall=0, big.mark=","),
+                  August = format(August,nsmall=0, big.mark=","),
+                  September = format(September,nsmall=0, big.mark=","),
+                  October = format(October,nsmall=0, big.mark=","),
+                  November = format(November,nsmall=0, big.mark=","),
+                  December = format(December,nsmall=0, big.mark=","))
+
+negro <- which(is.na(tabla$crudo))
+espacios_2 <- which(tabla$indent == 2)
+espacios_4 <- which(tabla$indent == 4)
+espacios_6 <- which(tabla$indent == 6)
+espacios_8 <- which(tabla$indent == 8)
+
+
+
+tabla %>% select(-crudo,-indent) %>% rename(Variable = columna) %>% 
+  kbl(caption = "EQUITY") %>%
+  kable_styling(latex_options = "striped", stripe_color = "#E32636", full_width = TRUE) %>%
+  kable_classic(full_width = F, html_font = "Helvetica") %>% 
+  row_spec(c(negro), bold = T) %>% 
+  add_indent(c(espacios_2), level_of_indent = 1) %>% 
+  add_indent(c(espacios_4), level_of_indent = 2) %>% 
+  add_indent(c(espacios_6), level_of_indent = 3) %>% 
+  add_indent(c(espacios_8), level_of_indent = 4) %>% 
+  kableExtra::scroll_box(width = "100%", height = "700px")
+
+
+
+
+```
+
+##
+
+<center>
+```{r}
+                
+df_fs <-  df_base_horizontal(params$year)
+
+
+# Adjuntamos Meses vacios en caso de faltar
+nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)]
+df <- data.frame(matrix(ncol = length(temp), nrow = 1))
+colnames(df) <- temp
+df$tipo <- NA
+df_fs <- left_join(df_fs, df)
+
+                          
+
+df_fs_liab <- df_fs %>% filter(tipo %in%  c("ASSETS","LIABILITIES", "EQUITY")) %>% 
+  select(tipo, nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December)
+                                                                  
+
+
+tabla <- tabla_vert(df_fs_liab)
+
+tabla %<>% select(-c(tipo, nivel1, nivel2, entidad))
+tabla %<>% select(columna, "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", crudo, indent) 
+# tabla$columna <- paste0("`",tabla$columna)
+
+tabla %<>% mutate(January = format(January,nsmall=0, big.mark=","),
+                  February = format(February,nsmall=0, big.mark=","),
+                  March = format(March,nsmall=0, big.mark=","),
+                  April = format(April,nsmall=0, big.mark=","),
+                  May = format(May,nsmall=0, big.mark=","),
+                  June = format(June,nsmall=0, big.mark=","),
+                  July = format(July,nsmall=0, big.mark=","),
+                  August = format(August,nsmall=0, big.mark=","),
+                  September = format(September,nsmall=0, big.mark=","),
+                  October = format(October,nsmall=0, big.mark=","),
+                  November = format(November,nsmall=0, big.mark=","),
+                  December = format(December,nsmall=0, big.mark=","))
+
+
+tabla %<>% mutate(columna = case_when(indent == 2 ~ paste0("  ", columna),
+                                     indent == 4 ~ paste0("    ",columna),
+                                     indent == 6 ~ paste0("      ", columna),
+                                     indent == 8 ~ paste0("        ", columna),
+                                     TRUE ~ columna)) %>% 
+  select(-crudo, -indent) %>% rename("Varliable" = columna)
+
+tabla %>% 
+  download_this(
+    output_name = "balance_sheet",
+    output_extension = ".xlsx",
+    button_label = "Download Excel Balance Sheet",
+    button_type = "success",
+    has_icon = TRUE,
+    icon = "fa fa-table"
+  )
+
+```
+
+</center>
+
+
+<!-- ```{r} -->
+
+<!-- # GENERACION DEL BALANCE SHEET PDF -->
+
+<!-- df_fs <-  df_base_horizontal(params$year) -->
+
+<!-- # Adjuntamos Meses vacios en caso de faltar -->
+<!-- nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December") -->
+<!-- temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)] -->
+<!-- df <- data.frame(matrix(ncol = length(temp), nrow = 1)) -->
+<!-- colnames(df) <- temp -->
+<!-- df$tipo <- NA -->
+<!-- df_fs <- left_join(df_fs, df) -->
+
+
+
+<!-- df_fs_liab <- df_fs %>% filter(tipo %in%  c("ASSETS","LIABILITIES", "EQUITY")) %>%  -->
+<!--   select(tipo, nivel1, nivel2, entidad, crudo,  -->
+<!--          January, February, March, April, May, June, July, August, September, October, November, December) -->
+
+
+
+<!-- tabla <- tabla_vert(df_fs_liab) -->
+
+<!-- tabla %<>% select(-c(tipo, nivel1, nivel2, entidad)) -->
+<!-- tabla %<>% select(columna, "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", crudo, indent)  -->
+<!-- # tabla$columna <- paste0("`",tabla$columna) -->
+
+<!-- tabla %<>% mutate(January = format(January,nsmall=0, big.mark=","), -->
+<!--                   February = format(February,nsmall=0, big.mark=","), -->
+<!--                   March = format(March,nsmall=0, big.mark=","), -->
+<!--                   April = format(April,nsmall=0, big.mark=","), -->
+<!--                   May = format(May,nsmall=0, big.mark=","), -->
+<!--                   June = format(June,nsmall=0, big.mark=","), -->
+<!--                   July = format(July,nsmall=0, big.mark=","), -->
+<!--                   August = format(August,nsmall=0, big.mark=","), -->
+<!--                   September = format(September,nsmall=0, big.mark=","), -->
+<!--                   October = format(October,nsmall=0, big.mark=","), -->
+<!--                   November = format(November,nsmall=0, big.mark=","), -->
+<!--                   December = format(December,nsmall=0, big.mark=",")) -->
+
+
+<!-- negro <- which(is.na(tabla$crudo)) -->
+<!-- espacios_2 <- which(tabla$indent == 2) -->
+<!-- espacios_4 <- which(tabla$indent == 4) -->
+<!-- espacios_6 <- which(tabla$indent == 6) -->
+<!-- espacios_8 <- which(tabla$indent == 8) -->
+
+
+<!-- tabla %>% select(-crudo,-indent) %>% rename("Varliable" = columna) %>%  -->
+<!--   kbl(caption = "BALANCE SHEET") %>% -->
+<!--   kable_styling(latex_options = "striped", stripe_color = "#E32636", full_width = TRUE) %>% -->
+<!--   kable_classic(full_width = F, html_font = "Helvetica") %>%  -->
+<!--   row_spec(c(negro), bold = T) %>%  -->
+<!--   add_indent(c(espacios_2), level_of_indent = 1) %>%  -->
+<!--   add_indent(c(espacios_4), level_of_indent = 2) %>%  -->
+<!--   add_indent(c(espacios_6), level_of_indent = 3) %>%  -->
+<!--   add_indent(c(espacios_8), level_of_indent = 4) %>%  -->
+<!--   save_kable("output/balance_sheet.pdf") -->
+
+
+
+<!-- ``` -->
+
+
+<br>
+
+<center>
+
+```{r}
+
+# DOWNLAD THIS BALANCE SHEET PDF
+
+# download_file(
+#   path = here::here("output/balance_sheet.pdf"),
+#   output_name = "balance_sheet",
+#   button_label = "Doownload PDF Balance Sheet ",
+#   button_type = "danger",
+#   has_icon = TRUE,
+#   icon = "fa fa-file",
+#   self_contained = FALSE
+# )
+
+
+download_link(
+  link = "https://rafalopezv.io/static/locfund/balance_sheet.pdf",
+  button_label = "Doownload PDF Balance Sheet ",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-file",
+  self_contained = FALSE
+)
+
+```
+
+</center>
+
+
+
+## PROFIT/LOSS (USD) {.tabset .tabset-fade .tabset-pills}
+
+### MONTHLY
+
+```{r}
+
+df_fs <-  df_base_horizontal(params$year)
+
+
+# Adjuntamos Meses vacios en caso de faltar
+nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)]
+df <- data.frame(matrix(ncol = length(temp), nrow = 1))
+colnames(df) <- temp
+df$tipo <- NA
+df_fs <- left_join(df_fs, df)
+
+
+df_results <- df_fs %>% filter(tipo %in% c("PROFIT/(LOSS)",
+                               "PROFIT / LOSS before provisions",
+                               "PROFIT / LOSS after provisions",
+                               "PROFIT / LOSS after FX")) %>% 
+  mutate(nivel1 = ifelse(tipo %in% c("PROFIT / LOSS before provisions",
+                                     "PROFIT / LOSS after provisions",
+                                     "PROFIT / LOSS after FX"), tipo, nivel1)) %>% 
+  select(nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December) %>% 
+  mutate(nivel1 = case_when(nivel1 == "INCOME" ~ "Total Income",
+                            nivel1 == "EXPENSES" ~ "Total Expenses",
+                            TRUE ~ nivel1))
+
+
+df_results %<>% select(-entidad,-crudo)
+
+
+sticky_style <- list(position = "sticky", left = 0, background = "#fff", zIndex = 1,
+                     borderRight = "1px solid #eee")
+
+
+temp <- df_results %>% group_by(nivel1) %>% 
+  summarise(January = sum(January),
+            February = sum(February),
+            March = sum(March),
+            April = sum(April),
+            May = sum(May),
+            June = sum(June),
+            July = sum(July),
+            August = sum(August),
+            September = sum(September),
+            October = sum(October),
+            November = sum(November),
+            December = sum(December)) %>%
+  filter(!nivel1 %in% c("TSF Expenses", "TSF Income"))
+
+# Orden en columnas
+temp <- temp[order(match(temp$nivel1, c("Total Income", "Total Expenses", "Profit before Bad Loans P.",  
+                                        "PROFIT / LOSS before provisions",
+                                        "Bad Loans Provisions",
+                                        "PROFIT / LOSS after provisions",
+                                        "Exchange Rate Difference",
+                                        "PROFIT / LOSS after FX"))),]
+
+
+# Lista con todos los elementos de tipo
+temp_list <- list()
+for (i in 1:nrow(temp)) {
+  
+  temp_list[[i]] <- temp[i,]
+  
+}
+
+
+# indentificamos tipo con valores en nivel1 
+sub_tipo <- df_results %>% 
+  filter(!is.na(nivel2)) %>% 
+  pull(nivel1) %>% unique()
+
+
+
+temp_list_1 <- list()
+for (i in 1:length(temp_list)) {
+  inner_temp <- list()
+  for (j in 1:nrow(df_results %>% filter(nivel1 == paste0(temp_list[[i]][1])) %>% 
+                   # filter(!is.na(nivel2)) %>% 
+                   group_by(nivel2) %>% 
+                   summarise(January = sum(January),
+                             February = sum(February),
+                             March = sum(March),
+                             April = sum(April),
+                             May = sum(May),
+                             June = sum(June),
+                             July = sum(July),
+                             August = sum(August),
+                             September = sum(September),
+                             October = sum(October),
+                             November = sum(November),
+                             December = sum(December)))) {
+    if (is.na(df_results %>% filter(nivel1 == paste0(temp_list[[i]][1])) %>% select(nivel2))) {
+      i=i+1
+      inner_temp <- NULL
+    } else{
+      inner_temp[[j]] <- df_results %>% filter(nivel1 == paste0(temp_list[[i]][1])) %>% 
+        # filter(!is.na(nivel2)) %>% 
+        group_by(nivel2) %>% 
+        summarise(January = sum(January),
+                  February = sum(February),
+                  March = sum(March),
+                  April = sum(April),
+                  May = sum(May),
+                  June = sum(June),
+                  July = sum(July),
+                  August = sum(August),
+                  September = sum(September),
+                  October = sum(October),
+                  November = sum(November),
+                  December = sum(December)) %>% slice(j)
+    }
+    
+  }
+  
+  temp_list_1 <- append(temp_list_1, list(inner_temp))
+  
+}
+
+
+reactable(
+  bind_rows(temp_list),
+  # filterable = TRUE,
+  bordered = TRUE,
+  striped = TRUE,
+  highlight = TRUE,
+  # defaultPageSize = 15,
+  # resizable = TRUE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+  ),
+  columns = list(
+    nivel1 = colDef(name = "PROFIT/LOSS",
+                    minWidth = 150),
+    January = colDef(name = "Jan",
+                     format = colFormat(separators = TRUE),
+                     minWidth = 90),
+    February = colDef(name = "Feb",
+                      format = colFormat(separators = TRUE),
+                      minWidth = 90),
+    March = colDef(name = "Mar",
+                   format = colFormat(separators = TRUE),
+                   minWidth = 90),
+    April = colDef(name = "Apr",
+                   format = colFormat(separators = TRUE),
+                   minWidth = 90),
+    May = colDef(name = "May",
+                 format = colFormat(separators = TRUE),
+                 minWidth = 90),
+    June = colDef(name = "June",
+                  format = colFormat(separators = TRUE),
+                  minWidth = 90),
+    July = colDef(name = "July",
+                  format = colFormat(separators = TRUE),
+                  minWidth = 90),
+    August = colDef(name = "Aug",
+                    format = colFormat(separators = TRUE),
+                    minWidth = 90),
+    September = colDef(name = "Sept",
+                       format = colFormat(separators = TRUE),
+                       minWidth = 90),
+    October = colDef(name = "Oct",
+                     format = colFormat(separators = TRUE),
+                     minWidth = 90),
+    November = colDef(name = "Nov",
+                      format = colFormat(separators = TRUE),
+                      minWidth = 90),
+    December = colDef(name = "Dec",
+                      format = colFormat(separators = TRUE),
+                      minWidth = 90)
+  ),
+  details = function(index){
+    if(index %in% c(which(bind_rows(temp_list)$nivel1 %in% sub_tipo))){
+      reactable(bind_rows(temp_list_1[[index]]) %>% `colnames<-`(c(bind_rows(temp_list)$nivel1[index], 
+                                                                   "January", "February", "March", "April", 
+                                                                   "May", "June", "July", "August", "September", 
+                                                                   "October", "November", "December")),
+                bordered = TRUE,
+                striped = TRUE,
+                highlight = TRUE,
+                theme = reactableTheme(
+                  borderColor = "#E1E1E4",
+                  stripedColor = "#F4F4F5",
+                  highlightColor = "#E8E8EA",
+                  cellPadding = "8px 12px",
+                  style = list(fontFamily = "Helvetica")
+                ),
+                columns = list(
+                  January = colDef(name = "Jan",
+                                   format = colFormat(separators = TRUE),
+                                   minWidth = 90),
+                  February = colDef(name = "Feb",
+                                    format = colFormat(separators = TRUE),
+                                    minWidth = 90),
+                  March = colDef(name = "Mar",
+                                 format = colFormat(separators = TRUE),
+                                 minWidth = 90),
+                  April = colDef(name = "Apr",
+                                 format = colFormat(separators = TRUE),
+                                 minWidth = 90),
+                  May = colDef(name = "May",
+                               format = colFormat(separators = TRUE),
+                               minWidth = 90),
+                  June = colDef(name = "June",
+                                format = colFormat(separators = TRUE),
+                                minWidth = 90),
+                  July = colDef(name = "July",
+                                format = colFormat(separators = TRUE),
+                                minWidth = 90),
+                  August = colDef(name = "Aug",
+                                  format = colFormat(separators = TRUE),
+                                  minWidth = 90),
+                  September = colDef(name = "Sept",
+                                     format = colFormat(separators = TRUE),
+                                     minWidth = 90),
+                  October = colDef(name = "Oct",
+                                   format = colFormat(separators = TRUE),
+                                   minWidth = 90),
+                  November = colDef(name = "Nov",
+                                    format = colFormat(separators = TRUE),
+                                    minWidth = 90),
+                  December = colDef(name = "Dec",
+                                    format = colFormat(separators = TRUE),
+                                    minWidth = 90)
+
+                )
+      )
+    }
+  }
+)
+
+
+```
+
+
+### ACCUMULATED
+
+```{r}
+
+df_fs <-  df_base_horizontal(params$year)
+
+
+# Adjuntamos Meses vacios en caso de faltar
+nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)]
+df <- data.frame(matrix(ncol = length(temp), nrow = 1))
+colnames(df) <- temp
+df$tipo <- NA
+df_fs <- left_join(df_fs, df)
+
+
+df_results <- df_fs %>% filter(tipo %in% c("PROFIT/(LOSS)",
+                                           "PROFIT / LOSS before provisions",
+                                           "PROFIT / LOSS after provisions",
+                                           "PROFIT / LOSS after FX")) %>% 
+  mutate(nivel1 = ifelse(tipo %in% c("PROFIT / LOSS before provisions",
+                                     "PROFIT / LOSS after provisions",
+                                     "PROFIT / LOSS after FX"), tipo, nivel1)) %>% 
+  select(nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December) %>% 
+  mutate(nivel1 = case_when(nivel1 == "INCOME" ~ "Total Income",
+                            nivel1 == "EXPENSES" ~ "Total Expenses",
+                            TRUE ~ nivel1))
+
+
+df_results %<>% select(-entidad,-crudo)
+
+colnames(df_results)[3:14] <- c("uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "once", "dose")
+
+df_results$January <- df_results$uno
+df_results$February <- df_results$uno + df_results$dos
+df_results$March <- df_results$February + df_results$tres
+df_results$April <- df_results$March + df_results$cuatro
+df_results$May <- df_results$April + df_results$cinco
+df_results$June <- df_results$May + df_results$seis
+df_results$July <- df_results$June + df_results$siete
+df_results$August <- df_results$July + df_results$ocho
+df_results$September <- df_results$August + df_results$nueve
+df_results$October <- df_results$September + df_results$diez
+df_results$November <- df_results$October + df_results$once
+df_results$December <- df_results$November + df_results$dose
+
+df_results %<>% select(-c("uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "once", "dose"))
+
+
+sticky_style <- list(position = "sticky", left = 0, background = "#fff", zIndex = 1,
+                     borderRight = "1px solid #eee")
+
+
+temp <- df_results %>% group_by(nivel1) %>% 
+  summarise(January = sum(January),
+            February = sum(February),
+            March = sum(March),
+            April = sum(April),
+            May = sum(May),
+            June = sum(June),
+            July = sum(July),
+            August = sum(August),
+            September = sum(September),
+            October = sum(October),
+            November = sum(November),
+            December = sum(December)) %>%
+  filter(!nivel1 %in% c("TSF Expenses", "TSF Income"))
+
+# Orden en columnas
+temp <- temp[order(match(temp$nivel1, c("Total Income", "Total Expenses", "Profit before Bad Loans P.",  
+                                        "PROFIT / LOSS before provisions",
+                                        "Bad Loans Provisions",
+                                        "PROFIT / LOSS after provisions",
+                                        "Exchange Rate Difference",
+                                        "PROFIT / LOSS after FX"))),]
+
+
+# Lista con todos los elementos de tipo
+temp_list <- list()
+for (i in 1:nrow(temp)) {
+  
+  temp_list[[i]] <- temp[i,]
+  
+}
+
+
+# indentificamos tipo con valores en nivel1 
+sub_tipo <- df_results %>% 
+  filter(!is.na(nivel2)) %>% 
+  pull(nivel1) %>% unique()
+
+
+
+temp_list_1 <- list()
+for (i in 1:length(temp_list)) {
+  inner_temp <- list()
+  for (j in 1:nrow(df_results %>% filter(nivel1 == paste0(temp_list[[i]][1])) %>% 
+                   # filter(!is.na(nivel2)) %>% 
+                   group_by(nivel2) %>% 
+                   summarise(January = sum(January),
+                             February = sum(February),
+                             March = sum(March),
+                             April = sum(April),
+                             May = sum(May),
+                             June = sum(June),
+                             July = sum(July),
+                             August = sum(August),
+                             September = sum(September),
+                             October = sum(October),
+                             November = sum(November),
+                             December = sum(December)))) {
+    if (is.na(df_results %>% filter(nivel1 == paste0(temp_list[[i]][1])) %>% select(nivel2))) {
+      i=i+1
+      inner_temp <- NULL
+    } else{
+      inner_temp[[j]] <- df_results %>% filter(nivel1 == paste0(temp_list[[i]][1])) %>% 
+        # filter(!is.na(nivel2)) %>% 
+        group_by(nivel2) %>% 
+        summarise(January = sum(January),
+                  February = sum(February),
+                  March = sum(March),
+                  April = sum(April),
+                  May = sum(May),
+                  June = sum(June),
+                  July = sum(July),
+                  August = sum(August),
+                  September = sum(September),
+                  October = sum(October),
+                  November = sum(November),
+                  December = sum(December)) %>% slice(j)
+    }
+    
+  }
+  
+  temp_list_1 <- append(temp_list_1, list(inner_temp))
+  
+}
+
+
+reactable(
+  bind_rows(temp_list),
+  # filterable = TRUE,
+  bordered = TRUE,
+  striped = TRUE,
+  highlight = TRUE,
+  # defaultPageSize = 15,
+  # resizable = TRUE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+  ),
+  columns = list(
+    nivel1 = colDef(name = "PROFIT/LOSS",
+                    minWidth = 150),
+    January = colDef(name = "Jan",
+                     format = colFormat(separators = TRUE),
+                     minWidth = 100),
+    February = colDef(name = "Feb",
+                      format = colFormat(separators = TRUE),
+                      minWidth = 100),
+    March = colDef(name = "Mar",
+                   format = colFormat(separators = TRUE),
+                   minWidth = 100),
+    April = colDef(name = "Apr",
+                   format = colFormat(separators = TRUE),
+                   minWidth = 100),
+    May = colDef(name = "May",
+                 format = colFormat(separators = TRUE),
+                 minWidth = 100),
+    June = colDef(name = "June",
+                  format = colFormat(separators = TRUE),
+                  minWidth = 100),
+    July = colDef(name = "July",
+                  format = colFormat(separators = TRUE),
+                  minWidth = 100),
+    August = colDef(name = "Aug",
+                    format = colFormat(separators = TRUE),
+                    minWidth = 100),
+    September = colDef(name = "Sept",
+                       format = colFormat(separators = TRUE),
+                       minWidth = 100),
+    October = colDef(name = "Oct",
+                     format = colFormat(separators = TRUE),
+                     minWidth = 100),
+    November = colDef(name = "Nov",
+                      format = colFormat(separators = TRUE),
+                      minWidth = 100),
+    December = colDef(name = "Dec",
+                      format = colFormat(separators = TRUE),
+                      minWidth = 100)
+  ),
+  details = function(index){
+    if(index %in% c(which(bind_rows(temp_list)$nivel1 %in% sub_tipo))){
+      reactable(bind_rows(temp_list_1[[index]]) %>% `colnames<-`(c(bind_rows(temp_list)$nivel1[index], 
+                                                                   "January", "February", "March", "April", 
+                                                                   "May", "June", "July", "August", "September", 
+                                                                   "October", "November", "December")),
+                bordered = TRUE,
+                striped = TRUE,
+                highlight = TRUE,
+                theme = reactableTheme(
+                  borderColor = "#E1E1E4",
+                  stripedColor = "#F4F4F5",
+                  highlightColor = "#E8E8EA",
+                  cellPadding = "8px 12px",
+                  style = list(fontFamily = "Helvetica")
+                ),
+                columns = list(
+                  January = colDef(name = "Jan",
+                                   format = colFormat(separators = TRUE),
+                                   minWidth = 100),
+                  February = colDef(name = "Feb",
+                                    format = colFormat(separators = TRUE),
+                                    minWidth = 100),
+                  March = colDef(name = "Mar",
+                                 format = colFormat(separators = TRUE),
+                                 minWidth = 100),
+                  April = colDef(name = "Apr",
+                                 format = colFormat(separators = TRUE),
+                                 minWidth = 100),
+                  May = colDef(name = "May",
+                               format = colFormat(separators = TRUE),
+                               minWidth = 100),
+                  June = colDef(name = "June",
+                                format = colFormat(separators = TRUE),
+                                minWidth = 100),
+                  July = colDef(name = "July",
+                                format = colFormat(separators = TRUE),
+                                minWidth = 100),
+                  August = colDef(name = "Aug",
+                                  format = colFormat(separators = TRUE),
+                                  minWidth = 100),
+                  September = colDef(name = "Sept",
+                                     format = colFormat(separators = TRUE),
+                                     minWidth = 100),
+                  October = colDef(name = "Oct",
+                                   format = colFormat(separators = TRUE),
+                                   minWidth = 100),
+                  November = colDef(name = "Nov",
+                                    format = colFormat(separators = TRUE),
+                                    minWidth = 100),
+                  December = colDef(name = "Dec",
+                                    format = colFormat(separators = TRUE),
+                                    minWidth = 100)
+                  
+                )
+      )
+    }
+  }
+)
+
+
+```
+
+
+
+<center>
+```{r}
+
+df_fs <-  df_base_horizontal(params$year)
+
+# Adjuntamos Meses vacios en caso de faltar
+nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)]
+df <- data.frame(matrix(ncol = length(temp), nrow = 1))
+colnames(df) <- temp
+df$tipo <- NA
+df_fs <- left_join(df_fs, df)
+
+
+
+df_fs_result <- df_fs %>% filter(tipo %in%  c("PROFIT/(LOSS)"),
+                                 ! nivel1 %in% c("Bad Loans Provisions", "Exchange Rate Difference", "TSF Expenses", "TSF Income")) %>% 
+  select(tipo, nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December)
+
+
+temp <- rbind(df_fs %>% filter(tipo %in%  c("PROFIT / LOSS before provisions",
+                                      "PROFIT / LOSS after provisions",
+                                      "PROFIT / LOSS after FX")),
+              df_fs %>% filter(tipo %in%  c("PROFIT/(LOSS)"),
+                               nivel1 %in% c("Bad Loans Provisions", "Exchange Rate Difference", "TSF Expenses", "TSF Income"))) %>% 
+  select(tipo, nivel1, nivel2, entidad, crudo, 
+         January, February, March, April, May, June, July, August, September, October, November, December)
+
+df_fs_result <- df_fs_result[order(match(df_fs_result$nivel1, c("INCOME", "EXPENSES", "Bad Loans Provisions","Exchange Rate Difference"))),]
+
+tabla <- tabla_vert(df_fs_result)
+
+
+tabla <- tabla[order(match(tabla$nivel1, c(NA,"INCOME", "EXPENSES", "Bad Loans Provisions","Exchange Rate Difference"))),]
+
+temp <- tabla_vert(temp)
+
+temp <- temp[order(match(temp$columna, c("PROFIT/(LOSS)","PROFIT / LOSS before provisions", "Bad Loans Provisions", "PROFIT / LOSS after provisions", 
+                                         "Exchange Rate Difference", "PROFIT / LOSS after FX"))),]
+tabla <-  rbind(tabla,temp %>% slice(-1))
+
+
+tabla %<>% select(-c(tipo, nivel1, nivel2, entidad))
+tabla %<>% select(columna, "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", crudo, indent) 
+# tabla$columna <- paste0("`",tabla$columna)
+
+tabla %<>% mutate(January = format(January,nsmall=0, big.mark=","),
+                  February = format(February,nsmall=0, big.mark=","),
+                  March = format(March,nsmall=0, big.mark=","),
+                  April = format(April,nsmall=0, big.mark=","),
+                  May = format(May,nsmall=0, big.mark=","),
+                  June = format(June,nsmall=0, big.mark=","),
+                  July = format(July,nsmall=0, big.mark=","),
+                  August = format(August,nsmall=0, big.mark=","),
+                  September = format(September,nsmall=0, big.mark=","),
+                  October = format(October,nsmall=0, big.mark=","),
+                  November = format(November,nsmall=0, big.mark=","),
+                  December = format(December,nsmall=0, big.mark=","))
+
+
+tabla %<>% mutate(columna = case_when(indent == 2 ~ paste0("  ", columna),
+                                     indent == 4 ~ paste0("    ",columna),
+                                     indent == 6 ~ paste0("      ", columna),
+                                     indent == 8 ~ paste0("        ", columna),
+                                     TRUE ~ columna))
+
+
+tabla %>% select(-crudo,-indent) %>% rename("Varliable" = columna) %>% 
+  download_this(
+    output_name = "profit_loss",
+    output_extension = ".xlsx",
+    button_label = "Download Excel Monthly Profit/Loss",
+    button_type = "success",
+    has_icon = TRUE,
+    icon = "fa fa-table"
+  )
+  
+
+
+
+```
+</center>
+
+
+<!-- ```{r} -->
+
+<!-- # GENERACION DE MONTHLY PROFIT/LOSS PDF -->
+
+<!-- df_fs <-  df_base_horizontal(params$year) -->
+
+
+<!-- # Adjuntamos Meses vacios en caso de faltar -->
+<!-- nombres_meses <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December") -->
+<!-- temp <- nombres_meses[!nombres_meses %in% colnames(df_fs)] -->
+<!-- df <- data.frame(matrix(ncol = length(temp), nrow = 1)) -->
+<!-- colnames(df) <- temp -->
+<!-- df$tipo <- NA -->
+<!-- df_fs <- left_join(df_fs, df) -->
+
+
+
+<!-- df_fs_result <- df_fs %>% filter(tipo %in%  c("PROFIT/(LOSS)"), -->
+<!--                                  ! nivel1 %in% c("Bad Loans Provisions", "Exchange Rate Difference", "TSF Expenses", "TSF Income")) %>%  -->
+<!--   select(tipo, nivel1, nivel2, entidad, crudo,  -->
+<!--          January, February, March, April, May, June, July, August, September, October, November, December) -->
+
+
+<!-- temp <- rbind(df_fs %>% filter(tipo %in%  c("PROFIT / LOSS before provisions", -->
+<!--                                       "PROFIT / LOSS after provisions", -->
+<!--                                       "PROFIT / LOSS after FX")), -->
+<!--               df_fs %>% filter(tipo %in%  c("PROFIT/(LOSS)"), -->
+<!--                                nivel1 %in% c("Bad Loans Provisions", "Exchange Rate Difference", "TSF Expenses", "TSF Income"))) %>%  -->
+<!--   select(tipo, nivel1, nivel2, entidad, crudo,  -->
+<!--          January, February, March, April, May, June, July, August, September, October, November, December) -->
+
+<!-- df_fs_result <- df_fs_result[order(match(df_fs_result$nivel1, c("INCOME", "EXPENSES", "Bad Loans Provisions","Exchange Rate Difference"))),] -->
+
+<!-- tabla <- tabla_vert(df_fs_result) -->
+
+
+<!-- tabla <- tabla[order(match(tabla$nivel1, c(NA,"INCOME", "EXPENSES", "Bad Loans Provisions","Exchange Rate Difference"))),] -->
+
+<!-- temp <- tabla_vert(temp) -->
+
+<!-- temp <- temp[order(match(temp$columna, c("PROFIT/(LOSS)","PROFIT / LOSS before provisions", "Bad Loans Provisions", "PROFIT / LOSS after provisions",  -->
+<!--                                          "Exchange Rate Difference", "PROFIT / LOSS after FX"))),] -->
+<!-- tabla <-  rbind(tabla,temp %>% slice(-1)) -->
+
+
+<!-- tabla %<>% select(-c(tipo, nivel1, nivel2, entidad)) -->
+<!-- tabla %<>% select(columna, "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", crudo, indent)  -->
+<!-- # tabla$columna <- paste0("`",tabla$columna) -->
+
+<!-- tabla %<>% mutate(January = format(January,nsmall=0, big.mark=","), -->
+<!--                   February = format(February,nsmall=0, big.mark=","), -->
+<!--                   March = format(March,nsmall=0, big.mark=","), -->
+<!--                   April = format(April,nsmall=0, big.mark=","), -->
+<!--                   May = format(May,nsmall=0, big.mark=","), -->
+<!--                   June = format(June,nsmall=0, big.mark=","), -->
+<!--                   July = format(July,nsmall=0, big.mark=","), -->
+<!--                   August = format(August,nsmall=0, big.mark=","), -->
+<!--                   September = format(September,nsmall=0, big.mark=","), -->
+<!--                   October = format(October,nsmall=0, big.mark=","), -->
+<!--                   November = format(November,nsmall=0, big.mark=","), -->
+<!--                   December = format(December,nsmall=0, big.mark=",")) -->
+
+
+<!-- tabla %>% mutate(columna = case_when(indent == 2 ~ paste0("  ", columna), -->
+<!--                                      indent == 4 ~ paste0("    ",columna), -->
+<!--                                      indent == 6 ~ paste0("      ", columna), -->
+<!--                                      indent == 8 ~ paste0("        ", columna), -->
+<!--                                      TRUE ~ columna)) -->
+
+<!-- negro <- which(is.na(tabla$crudo)) -->
+<!-- espacios_2 <- which(tabla$indent == 2) -->
+<!-- espacios_4 <- which(tabla$indent == 4) -->
+<!-- espacios_6 <- which(tabla$indent == 6) -->
+<!-- espacios_8 <- which(tabla$indent == 8) -->
+
+
+
+<!-- tabla %>% select(-crudo,-indent) %>% rename("Varliable" = columna) %>%  -->
+<!--   kbl(caption = "PROFIT/LOSS") %>% -->
+<!--   kable_styling(latex_options = "striped", stripe_color = "#E32636", full_width = TRUE) %>% -->
+<!--   kable_classic(full_width = F, html_font = "Helvetica") %>%  -->
+<!--   row_spec(c(negro), bold = T) %>%  -->
+<!--   add_indent(c(espacios_2), level_of_indent = 1) %>%  -->
+<!--   add_indent(c(espacios_4), level_of_indent = 2) %>%  -->
+<!--   add_indent(c(espacios_6), level_of_indent = 3) %>%  -->
+<!--   add_indent(c(espacios_8), level_of_indent = 4) %>%  -->
+<!--   save_kable("output/profit_loss.pdf") -->
+
+
+
+<!-- ``` -->
+
+<br>
+
+<center>
+
+```{r}
+
+# DOWNLAD THIS BALANCE SHEET PDF
+
+# download_file(
+#   path = here::here("output/profit_loss.pdf"),
+#   output_name = "balance_sheet",
+#   button_label = "Doownload PDF Profit/Loss",
+#   button_type = "danger",
+#   has_icon = TRUE,
+#   icon = "fa fa-file",
+#   self_contained = FALSE
+# )
+
+download_link(
+  link = "https://rafalopezv.io/static/locfund/profit_loss.pdf",
+  button_label = "Doownload PDF Profit/Loss",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-file",
+  self_contained = FALSE
+)
+
+```
+
+</center>
+
+
+
+## COUNTRY ANALYSIS
+
+```{r}
+
+
+# llamamos funcion para generar base Country Analisis
+
+df_imf <- country_analysis(params$year,param_mes) %>% 
+  mutate(principal = round(principal,0),
+         accrued_interest = round(accrued_interest,0),
+         total = round(total,0))
+
+
+df_imf %<>% group_by(country, entity_hom) %>% 
+  summarise(operations = n(),
+            principal = sum(principal),
+            accrued_interest = sum(accrued_interest),
+            total = sum(total))
+
+
+temp <- df_imf %>% group_by(country) %>% 
+  summarise(
+            principal = sum(principal),
+            accrued_interest = sum(accrued_interest),
+            total = sum(total))
+
+
+
+# Lista con todos los elementos de tipo
+temp_list <- list()
+for (i in 1:nrow(temp)) {
+  
+  temp_list[[i]] <- temp[i,]
+  
+}
+
+
+# indentificamos tipo con valores en nivel1 
+sub_tipo <- df_imf %>% 
+  filter(!is.na(entity_hom)) %>% 
+  pull(country) %>% unique()
+
+
+
+temp_list_1 <- list()
+for (i in 1:length(temp_list)) {
+  inner_temp <- list()
+  for (j in 1:nrow(df_imf %>% filter(country == paste0(temp_list[[i]][1])) %>% 
+                   # filter(!is.na(nivel2)) %>% 
+                   group_by(entity_hom) %>% 
+                   summarise(
+                             principal = sum(principal),
+                             accrued_interest = sum(accrued_interest),
+                             total = sum(total)))) {
+    
+    inner_temp[[j]] <- df_imf %>% filter(country == paste0(temp_list[[i]][1])) %>% 
+        # filter(!is.na(nivel2)) %>% 
+        group_by(entity_hom) %>% 
+        summarise(
+                  principal = sum(principal),
+                  accrued_interest = sum(accrued_interest),
+                  total = sum(total)) %>% slice(j)
+    
+  }
+  
+  temp_list_1 <- append(temp_list_1, list(inner_temp))
+  
+}
+
+
+
+
+reactable(
+  bind_rows(temp_list),
+  # filterable = TRUE,
+  bordered = TRUE,
+  striped = TRUE,
+  highlight = TRUE,
+  defaultPageSize = 15,
+  # resizable = TRUE,
+  theme = reactableTheme(
+    borderColor = "#E1E1E4",
+    stripedColor = "#F4F4F5",
+    highlightColor = "#E8E8EA",
+    cellPadding = "8px 12px",
+    style = list(fontFamily = "Helvetica")
+  ),
+  columns = list(
+    country = colDef(name = "Country",
+                     minWidth = 80),
+    principal = colDef(name = "Principal",
+                       format = colFormat(separators = TRUE),
+                       minWidth = 75),
+    accrued_interest = colDef(name = "Accrued Interests",
+                              format = colFormat(separators = TRUE),
+                              minWidth = 75),
+    total = colDef(name = "Total",
+                   format = colFormat(separators = TRUE),
+                   minWidth = 75)
+  ),
+  details = function(index){
+      reactable(bind_rows(temp_list_1[[index]]) %>% `colnames<-`(c(bind_rows(temp_list)$country[index], "principal", "accrued_interest", "total")),
+                bordered = TRUE,
+                striped = TRUE,
+                highlight = TRUE,
+                theme = reactableTheme(
+                  borderColor = "#E1E1E4",
+                  stripedColor = "#F4F4F5",
+                  highlightColor = "#E8E8EA",
+                  cellPadding = "8px 12px",
+                  style = list(fontFamily = "Helvetica")
+                ),
+                columns = list(
+                  principal = colDef(name = "Principal",
+                                     format = colFormat(separators = TRUE),
+                                     minWidth = 75),
+                  accrued_interest = colDef(name = "Accrued Interests",
+                                            format = colFormat(separators = TRUE),
+                                            minWidth = 75),
+                  total = colDef(name = "Total",
+                                 format = colFormat(separators = TRUE),
+                                 minWidth = 75)
+                )
+      )
+  }
+)
+
+
+
+
+```
+
+
+
+<center>
+```{r}
+
+country_analysis(params$year,param_mes) %>% 
+  download_this(
+    output_name = "country_analysis",
+    output_extension = ".xlsx",
+    button_label = "Download Country Data",
+    button_type = "success",
+    has_icon = TRUE,
+    icon = "fa fa-table"
+  )
+
+```
+</center>
+
+
+
+<!-- # PDF VERSION -->
+
+<!-- To download a pdf version of the report click on the following button. -->
+
+
+
+
+<!-- ```{r, include = F} -->
+
+<!-- rmarkdown::render("pdf_quarterly_report.Rmd", output_format = "pdf_document", params = list( -->
+<!--   year = parms$year, -->
+<!--   month = parms$month, -->
+<!--   debt_commit = parms$debt_commit)) -->
+
+
+
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+
+<!-- download_file( -->
+<!--   path = system.file("pdf_quarterly_report.pdf", package = "downloadthis"), -->
+<!--   output_name = "PDF Quarterly Report", -->
+<!--   button_label = "Download pdf report", -->
+<!--   button_type = "danger", -->
+<!--   has_icon = TRUE, -->
+<!--   icon = "fa fa-save", -->
+<!--   self_contained = FALSE -->
+<!-- ) -->
+<!-- ``` -->
+
+</div>
